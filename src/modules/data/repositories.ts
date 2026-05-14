@@ -78,6 +78,9 @@ const mapProduct = (row: any): Product => ({
   pricing_group_id: row.pricing_group_id,
   pricing_group_slug: row.pricing_groups?.slug ?? null,
   pricing_group_name: row.pricing_groups?.name ?? null,
+  avg_order_quantity: Number(row.avg_order_quantity ?? 0),
+  avg_discount_per_unit: Number(row.avg_discount_per_unit ?? 0),
+  avg_profit_margin_per_unit: Number(row.avg_profit_margin_per_unit ?? 0),
   active: row.active
 });
 
@@ -173,6 +176,7 @@ export const catalogRepository = {
       .select(
         `
         id, sku, name, description, image_url, base_price, pricing_group_id, active,
+        avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
         pricing_groups(slug, name)
       `
@@ -201,6 +205,7 @@ export const catalogRepository = {
       .select(
         `
         id, sku, name, description, image_url, base_price, pricing_group_id, active,
+        avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
         pricing_groups(slug, name)
       `
@@ -276,6 +281,7 @@ export const catalogRepository = {
       .select(
         `
         id, sku, name, description, image_url, base_price, pricing_group_id, active,
+        avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
         pricing_groups(slug, name)
       `
@@ -327,6 +333,7 @@ export const catalogRepository = {
       .select(
         `
         id, sku, name, description, image_url, base_price, pricing_group_id, active,
+        avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
         pricing_groups(slug, name)
       `

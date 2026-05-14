@@ -9,6 +9,9 @@ export interface Product {
   category_name: string;
   pricing_group_slug: string | null;
   pricing_group_name: string | null;
+  avg_order_quantity?: number;
+  avg_discount_per_unit?: number;
+  avg_profit_margin_per_unit?: number;
   active: boolean;
 }
 

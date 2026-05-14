@@ -39,6 +39,9 @@ export interface Product {
   pricing_group_id: string | null;
   pricing_group_slug: string | null;
   pricing_group_name: string | null;
+  avg_order_quantity?: number;
+  avg_discount_per_unit?: number;
+  avg_profit_margin_per_unit?: number;
   active: boolean;
 }
 

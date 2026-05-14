@@ -52,6 +52,7 @@ export function App() {
   const [metrics, setMetrics] = useState<OrderMetrics | null>(null);
   const [settings, setSettings] = useState<OrderSettings>({ minOrderAmount: 0 });
   const [minOrderAmountInput, setMinOrderAmountInput] = useState("0");
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [productSearch, setProductSearch] = useState("");
   const [productCategoryFilter, setProductCategoryFilter] = useState("all");
   const [promoSearch, setPromoSearch] = useState("");
@@ -127,6 +128,7 @@ export function App() {
       setMetrics(metricsRes);
       setSettings(settingsRes);
       setMinOrderAmountInput(settingsRes.minOrderAmount.toString());
+      setLastSyncedAt(new Date().toISOString());
       setStatus("Connected");
     } catch (err) {
       setError((err as Error).message);
@@ -176,6 +178,7 @@ export function App() {
     setMetrics(null);
     setSettings({ minOrderAmount: 0 });
     setMinOrderAmountInput("0");
+    setLastSyncedAt(null);
     setStatus("Logged out");
   };
 
@@ -503,6 +506,7 @@ export function App() {
         </div>
 
         <p className={`status ${error ? "error" : ""}`}>{error ?? status}</p>
+        {lastSyncedAt && <p className="status">Last synced: {new Date(lastSyncedAt).toLocaleString()}</p>}
 
         <Routes>
           <Route
@@ -556,6 +560,9 @@ export function App() {
                         <th>Product</th>
                         <th>Category</th>
                         <th>Pricing Group</th>
+                        <th>Avg Qty</th>
+                        <th>Avg Discount / Unit</th>
+                        <th>Avg Profit / Unit</th>
                         <th>Price</th>
                         <th>Status</th>
                       </tr>
@@ -582,6 +589,9 @@ export function App() {
                             {p.pricing_group_name ?? p.pricing_group_slug ?? "No volume discount"}
                             <div className="muted">{p.pricing_group_slug ?? "none"}</div>
                           </td>
+                          <td>{Number(p.avg_order_quantity ?? 0).toFixed(2)}</td>
+                          <td>${Number(p.avg_discount_per_unit ?? 0).toFixed(2)}</td>
+                          <td>${Number(p.avg_profit_margin_per_unit ?? 0).toFixed(2)}</td>
                           <td>${Number(p.base_price).toFixed(2)}</td>
                           <td>
                             <StatusBadge label={p.active ? "Active" : "Inactive"} tone={p.active ? "good" : "neutral"} />
