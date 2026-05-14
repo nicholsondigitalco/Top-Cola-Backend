@@ -13,6 +13,8 @@ export interface CreateOrderInput {
   customerEmail?: string;
   deliveryAddress: string;
   deliveryInstructions?: string;
+  paymentMethod: "cash" | "zelle";
+  scheduledDeliveryTime?: string;
   idempotencyKey?: string;
   promoCode?: string;
   items: QuoteItemInput[];
@@ -29,6 +31,19 @@ export class OrdersService {
     const settings = await orderSettingsRepository.get();
     if (quote.total < settings.min_order_amount) {
       throw new Error(`Minimum order is $${settings.min_order_amount.toFixed(2)}.`);
+    }
+    if (input.scheduledDeliveryTime) {
+      const scheduled = new Date(input.scheduledDeliveryTime);
+      if (Number.isNaN(scheduled.getTime())) {
+        throw new Error("Scheduled delivery time must be a valid ISO datetime.");
+      }
+
+      const minAllowedTime = Date.now() + settings.min_delivery_buffer_minutes * 60 * 1000;
+      if (scheduled.getTime() < minAllowedTime) {
+        throw new Error(
+          `Scheduled delivery must be at least ${settings.min_delivery_buffer_minutes} minutes from now.`
+        );
+      }
     }
 
     const roundCurrency = (value: number): number => Math.round((value + Number.EPSILON) * 100) / 100;
@@ -47,6 +62,8 @@ export class OrdersService {
         customer_email: input.customerEmail,
         delivery_address: input.deliveryAddress,
         delivery_instructions: input.deliveryInstructions,
+        payment_method: input.paymentMethod,
+        scheduled_delivery_time: input.scheduledDeliveryTime,
         status: "pending",
         subtotal: quote.subtotal,
         volume_discount: quote.volumeDiscount,

@@ -40,7 +40,10 @@ describe("OrdersService createOrder", () => {
 
   it("creates an order, stores line items, and increments promo usage", async () => {
     vi.mocked(orderRepository.getByIdempotencyKey).mockResolvedValue(null);
-    vi.mocked(orderSettingsRepository.get).mockResolvedValue({ min_order_amount: 0 });
+    vi.mocked(orderSettingsRepository.get).mockResolvedValue({
+      min_order_amount: 0,
+      min_delivery_buffer_minutes: 45
+    });
     vi.mocked(catalogRepository.getProductCostsByIds).mockResolvedValue([
       {
         id: "00000000-0000-0000-0000-000000009999",
@@ -77,6 +80,7 @@ describe("OrdersService createOrder", () => {
       customerEmail: "test@example.com",
       deliveryAddress: "123 Main St",
       deliveryInstructions: "Leave at door",
+      paymentMethod: "cash",
       idempotencyKey: "idem-key-1",
       promoCode: "SAVE10",
       items: [{ productId: "00000000-0000-0000-0000-000000009999", quantity: 2 }]

@@ -293,7 +293,10 @@ adminRouter.get("/admin/metrics/orders", async (_req, res, next) => {
 adminRouter.get("/admin/settings/order-minimum", async (_req, res, next) => {
   try {
     const settings = await orderSettingsRepository.get();
-    res.json({ minOrderAmount: settings.min_order_amount });
+    res.json({
+      minOrderAmount: settings.min_order_amount,
+      minDeliveryBufferMinutes: settings.min_delivery_buffer_minutes
+    });
   } catch (error) {
     next(error);
   }
@@ -302,8 +305,14 @@ adminRouter.get("/admin/settings/order-minimum", async (_req, res, next) => {
 adminRouter.patch("/admin/settings/order-minimum", async (req, res, next) => {
   try {
     const payload = AdminMinimumOrderSchema.parse(req.body);
-    const settings = await orderSettingsRepository.updateMinOrderAmount(payload.minOrderAmount);
-    res.json({ minOrderAmount: settings.min_order_amount });
+    const settings = await orderSettingsRepository.update(
+      payload.minOrderAmount,
+      payload.minDeliveryBufferMinutes
+    );
+    res.json({
+      minOrderAmount: settings.min_order_amount,
+      minDeliveryBufferMinutes: settings.min_delivery_buffer_minutes
+    });
   } catch (error) {
     next(error);
   }

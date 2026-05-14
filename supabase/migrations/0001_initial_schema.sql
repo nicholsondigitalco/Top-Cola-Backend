@@ -72,6 +72,8 @@ create table if not exists orders (
   customer_email text,
   delivery_address text not null,
   delivery_instructions text,
+  payment_method text not null check (payment_method in ('cash', 'zelle')),
+  scheduled_delivery_time timestamptz,
   status text not null default 'pending' check (status in ('pending', 'out_for_delivery', 'complete', 'cancelled')),
   subtotal numeric(10,2) not null,
   volume_discount numeric(10,2) not null,
@@ -123,6 +125,7 @@ create table if not exists admin_settings (
 create table if not exists order_settings (
   id text primary key,
   min_order_amount numeric(10,2) not null default 0 check (min_order_amount >= 0),
+  min_delivery_buffer_minutes int not null default 45 check (min_delivery_buffer_minutes >= 0),
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now())
 );

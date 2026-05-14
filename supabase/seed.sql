@@ -301,6 +301,8 @@ values
   )
 on conflict (sku) do nothing;
 
-insert into order_settings (id, min_order_amount)
-values ('default', 0)
-on conflict (id) do update set min_order_amount = excluded.min_order_amount;
+insert into order_settings (id, min_order_amount, min_delivery_buffer_minutes)
+values ('default', 0, 45)
+on conflict (id) do update set
+  min_order_amount = excluded.min_order_amount,
+  min_delivery_buffer_minutes = excluded.min_delivery_buffer_minutes;

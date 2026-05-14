@@ -60,9 +60,20 @@ export interface OrderRecord {
   customer_name: string;
   customer_phone: string;
   customer_email: string | null;
+  delivery_address: string;
+  delivery_instructions?: string | null;
+  payment_method: "cash" | "zelle";
+  scheduled_delivery_time?: string | null;
   subtotal: number;
   total: number;
   savings: number;
+  gross_profit?: number;
+  pricing_snapshot?: {
+    items?: Array<{
+      product_name?: string;
+      quantity?: number;
+    }>;
+  };
   created_at: string;
 }
 
@@ -74,4 +85,5 @@ export interface OrderMetrics {
 
 export interface OrderSettings {
   minOrderAmount: number;
+  minDeliveryBufferMinutes: number;
 }

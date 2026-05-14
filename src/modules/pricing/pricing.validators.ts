@@ -16,6 +16,8 @@ export const OrderRequestSchema = z.object({
   customerEmail: z.string().email().optional(),
   deliveryAddress: z.string().trim().min(5).max(500),
   deliveryInstructions: z.string().trim().max(1000).optional(),
+  paymentMethod: z.enum(["cash", "zelle"]),
+  scheduledDeliveryTime: z.string().datetime().optional(),
   idempotencyKey: z.string().trim().min(8).max(120).optional(),
   promoCode: z.string().trim().min(2).max(40).optional(),
   items: z.array(QuoteItemSchema).min(1)
@@ -98,5 +100,6 @@ export const AdminOrderStatusSchema = z.object({
 });
 
 export const AdminMinimumOrderSchema = z.object({
-  minOrderAmount: z.number().nonnegative()
+  minOrderAmount: z.number().nonnegative(),
+  minDeliveryBufferMinutes: z.number().int().nonnegative()
 });

@@ -35,6 +35,7 @@ const STATUS_LABELS: Record<OrderRecord["status"], string> = {
   cancelled: "Cancelled"
 };
 type AddModalKind = "product" | "promo" | "rule" | "category" | null;
+type OrderDateFilter = "today" | "yesterday" | "last7" | "all";
 
 export function App() {
   const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? API_BASE_DEFAULT;
@@ -50,14 +51,20 @@ export function App() {
   const [rules, setRules] = useState<PricingRule[]>([]);
   const [orders, setOrders] = useState<OrderRecord[]>([]);
   const [metrics, setMetrics] = useState<OrderMetrics | null>(null);
-  const [settings, setSettings] = useState<OrderSettings>({ minOrderAmount: 0 });
+  const [settings, setSettings] = useState<OrderSettings>({
+    minOrderAmount: 0,
+    minDeliveryBufferMinutes: 45
+  });
   const [minOrderAmountInput, setMinOrderAmountInput] = useState("0");
+  const [minDeliveryBufferInput, setMinDeliveryBufferInput] = useState("45");
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [productSearch, setProductSearch] = useState("");
   const [productCategoryFilter, setProductCategoryFilter] = useState("all");
   const [promoSearch, setPromoSearch] = useState("");
   const [orderSearch, setOrderSearch] = useState("");
   const [orderStatusFilter, setOrderStatusFilter] = useState<"all" | OrderRecord["status"]>("all");
+  const [orderDateFilter, setOrderDateFilter] = useState<OrderDateFilter>("today");
+  const [updatingOrderIds, setUpdatingOrderIds] = useState<string[]>([]);
   const [adminTab, setAdminTab] = useState<AdminTab>("products");
 
   const [newProduct, setNewProduct] = useState({
@@ -128,6 +135,7 @@ export function App() {
       setMetrics(metricsRes);
       setSettings(settingsRes);
       setMinOrderAmountInput(settingsRes.minOrderAmount.toString());
+      setMinDeliveryBufferInput(settingsRes.minDeliveryBufferMinutes.toString());
       setLastSyncedAt(new Date().toISOString());
       setStatus("Connected");
     } catch (err) {
@@ -176,8 +184,12 @@ export function App() {
     setRules([]);
     setOrders([]);
     setMetrics(null);
-    setSettings({ minOrderAmount: 0 });
+    setSettings({
+      minOrderAmount: 0,
+      minDeliveryBufferMinutes: 45
+    });
     setMinOrderAmountInput("0");
+    setMinDeliveryBufferInput("45");
     setLastSyncedAt(null);
     setStatus("Logged out");
   };
@@ -342,6 +354,7 @@ export function App() {
   };
 
   const updateOrderStatus = async (orderId: string, statusValue: OrderRecord["status"]) => {
+    setUpdatingOrderIds((current) => [...current, orderId]);
     setIsBusy(true);
     setError(null);
     try {
@@ -350,6 +363,7 @@ export function App() {
     } catch (err) {
       setError((err as Error).message);
     } finally {
+      setUpdatingOrderIds((current) => current.filter((id) => id !== orderId));
       setIsBusy(false);
     }
   };
@@ -359,12 +373,16 @@ export function App() {
     setError(null);
     try {
       const nextValue = Number(minOrderAmountInput);
+      const nextBufferValue = Number(minDeliveryBufferInput);
       const updated = await client.request<OrderSettings>("/admin/settings/order-minimum", "PATCH", {
-        minOrderAmount: Number.isFinite(nextValue) && nextValue >= 0 ? nextValue : 0
+        minOrderAmount: Number.isFinite(nextValue) && nextValue >= 0 ? nextValue : 0,
+        minDeliveryBufferMinutes:
+          Number.isFinite(nextBufferValue) && nextBufferValue >= 0 ? Math.floor(nextBufferValue) : 0
       });
       setSettings(updated);
       setMinOrderAmountInput(updated.minOrderAmount.toString());
-      setStatus("Minimum order updated");
+      setMinDeliveryBufferInput(updated.minDeliveryBufferMinutes.toString());
+      setStatus("Order settings updated");
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -394,13 +412,43 @@ export function App() {
     return promo.code.toLowerCase().includes(search) || promo.id.toLowerCase().includes(search);
   });
 
-  const orderRows = orders.filter((order) => {
+  const dateFilteredOrders = orders.filter((order) => {
+    if (orderDateFilter === "all") return true;
+    const created = new Date(order.created_at);
+    const createdDate = new Date(created.getFullYear(), created.getMonth(), created.getDate()).getTime();
+    const now = new Date();
+    const todayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+
+    if (orderDateFilter === "today") {
+      return createdDate === todayDate;
+    }
+
+    if (orderDateFilter === "yesterday") {
+      const yesterdayDate = todayDate - 24 * 60 * 60 * 1000;
+      return createdDate === yesterdayDate;
+    }
+
+    if (orderDateFilter === "last7") {
+      const sevenDaysAgo = todayDate - 6 * 24 * 60 * 60 * 1000;
+      return createdDate >= sevenDaysAgo && createdDate <= todayDate;
+    }
+
+    return true;
+  });
+
+  const orderRows = dateFilteredOrders.filter((order) => {
     const search = orderSearch.trim().toLowerCase();
     if (!search) return true;
+    const itemText = (order.pricing_snapshot?.items ?? [])
+      .map((item) => `${item.product_name ?? ""} ${item.quantity ?? ""}`.trim())
+      .join(" ")
+      .toLowerCase();
     return (
       order.id.toLowerCase().includes(search) ||
       order.customer_name.toLowerCase().includes(search) ||
-      STATUS_LABELS[order.status].toLowerCase().includes(search)
+      order.delivery_address.toLowerCase().includes(search) ||
+      STATUS_LABELS[order.status].toLowerCase().includes(search) ||
+      itemText.includes(search)
     );
   });
   const filteredOrderRows =
@@ -413,6 +461,13 @@ export function App() {
     rows: filteredOrderRows.filter((order) => order.status === status)
   }));
   const pendingOrderCount = orders.filter((order) => order.status === "pending").length;
+  const getOrderItemsSummary = (order: OrderRecord): string => {
+    const items = order.pricing_snapshot?.items ?? [];
+    if (items.length === 0) return "No item detail";
+    return items
+      .map((item) => `${item.product_name ?? "Item"} x${item.quantity ?? 1}`)
+      .join(", ");
+  };
 
   const productGroups = [
     ...new Set([
@@ -731,13 +786,25 @@ export function App() {
                           onChange={(event) => setMinOrderAmountInput(event.target.value)}
                         />
                       </Field>
+                      <Field label="Minimum delivery buffer (minutes)">
+                        <input
+                          type="number"
+                          step="1"
+                          min="0"
+                          value={minDeliveryBufferInput}
+                          onChange={(event) => setMinDeliveryBufferInput(event.target.value)}
+                        />
+                      </Field>
                     </div>
                     <div className="actions">
                       <button type="button" onClick={() => void saveMinimumOrder()} disabled={isBusy}>
                         Save Minimum Order
                       </button>
                     </div>
-                    <p className="status">Current minimum: ${settings.minOrderAmount.toFixed(2)}</p>
+                    <p className="status">
+                      Current minimum: ${settings.minOrderAmount.toFixed(2)} | Delivery buffer:{" "}
+                      {settings.minDeliveryBufferMinutes} min
+                    </p>
                   </div>
                 )}
               </div>
@@ -775,6 +842,16 @@ export function App() {
                     <div className="section-actions">
                       <select
                         className="small-action-btn"
+                        value={orderDateFilter}
+                        onChange={(event) => setOrderDateFilter(event.target.value as OrderDateFilter)}
+                      >
+                        <option value="today">Today</option>
+                        <option value="yesterday">Yesterday</option>
+                        <option value="last7">Last 7 Days</option>
+                        <option value="all">All Dates</option>
+                      </select>
+                      <select
+                        className="small-action-btn"
                         value={orderStatusFilter}
                         onChange={(event) =>
                           setOrderStatusFilter(event.target.value as "all" | OrderRecord["status"])
@@ -799,7 +876,7 @@ export function App() {
                     {ordersByStatus.map((bucket) => (
                       <div
                         key={bucket.status}
-                        className={`order-bucket ${bucket.status === "pending" && bucket.rows.length > 0 ? "pending-highlight" : ""}`}
+                        className={`order-bucket ${bucket.status}-bucket ${bucket.status === "pending" && bucket.rows.length > 0 ? "pending-highlight" : ""}`}
                       >
                         <div className="bucket-header">
                           <h4>{bucket.label}</h4>
@@ -811,27 +888,33 @@ export function App() {
                           <table className="data-table">
                             <thead>
                               <tr>
-                                <th>ID</th>
-                                <th>Customer</th>
+                                <th>Name</th>
+                                <th>Address</th>
+                                <th>Items</th>
                                 <th>Status</th>
-                                <th>Savings</th>
-                                <th>Total</th>
-                                <th>Created</th>
+                                <th>Payment</th>
+                                <th>Price</th>
+                                <th>Profit</th>
+                                <th>Scheduled</th>
+                                <th>Time</th>
                               </tr>
                             </thead>
                             <tbody>
                               {bucket.rows.map((order) => (
-                                <tr key={order.id}>
-                                  <td>
-                                    <strong>{order.id}</strong>
-                                  </td>
+                                <tr
+                                  key={order.id}
+                                  className={updatingOrderIds.includes(order.id) ? "order-updating-row" : ""}
+                                >
                                   <td>
                                     <strong>{order.customer_name}</strong>
                                     <div className="muted">{order.customer_phone}</div>
                                   </td>
+                                  <td>{order.delivery_address}</td>
+                                  <td>{getOrderItemsSummary(order)}</td>
                                   <td>
                                     <select
                                       value={order.status}
+                                      disabled={updatingOrderIds.includes(order.id)}
                                       onChange={(e) =>
                                         void updateOrderStatus(order.id, e.target.value as OrderRecord["status"])
                                       }
@@ -842,9 +925,22 @@ export function App() {
                                         </option>
                                       ))}
                                     </select>
+                                    {updatingOrderIds.includes(order.id) && (
+                                      <div className="buffer-indicator">
+                                        <span className="buffer-dot" />
+                                        <span className="buffer-dot" />
+                                        <span className="buffer-dot" />
+                                      </div>
+                                    )}
                                   </td>
-                                  <td>${Number(order.savings).toFixed(2)}</td>
+                                  <td>{order.payment_method === "zelle" ? "Zelle" : "Cash"}</td>
                                   <td>${Number(order.total).toFixed(2)}</td>
+                                  <td>${Number(order.gross_profit ?? 0).toFixed(2)}</td>
+                                  <td>
+                                    {order.scheduled_delivery_time
+                                      ? new Date(order.scheduled_delivery_time).toLocaleString()
+                                      : "ASAP"}
+                                  </td>
                                   <td>{new Date(order.created_at).toLocaleString()}</td>
                                 </tr>
                               ))}

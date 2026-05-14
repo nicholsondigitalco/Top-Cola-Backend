@@ -7,6 +7,8 @@ export interface OrderInsertInput {
   customer_email?: string;
   delivery_address: string;
   delivery_instructions?: string;
+  payment_method: "cash" | "zelle";
+  scheduled_delivery_time?: string;
   status: "pending" | "out_for_delivery" | "complete" | "cancelled";
   subtotal: number;
   volume_discount: number;
@@ -42,6 +44,8 @@ export interface OrderRecord {
   customer_email: string | null;
   delivery_address: string;
   delivery_instructions: string | null;
+  payment_method: "cash" | "zelle";
+  scheduled_delivery_time: string | null;
   subtotal: number;
   volume_discount: number;
   promo_discount: number;
@@ -64,6 +68,7 @@ export interface ProductCostRecord {
 
 export interface OrderSettingsRecord {
   min_order_amount: number;
+  min_delivery_buffer_minutes: number;
 }
 
 const mapProduct = (row: any): Product => ({
@@ -121,7 +126,8 @@ const mapProductCost = (row: any): ProductCostRecord => ({
 });
 
 const mapOrderSettings = (row: any): OrderSettingsRecord => ({
-  min_order_amount: Number(row.min_order_amount ?? 0)
+  min_order_amount: Number(row.min_order_amount ?? 0),
+  min_delivery_buffer_minutes: Number(row.min_delivery_buffer_minutes ?? 45)
 });
 
 const sanitizeIdentifier = (value: string): string =>
@@ -484,15 +490,15 @@ export const orderSettingsRepository = {
   async get(): Promise<OrderSettingsRecord> {
     const { data, error } = await supabase
       .from("order_settings")
-      .select("min_order_amount")
+      .select("min_order_amount, min_delivery_buffer_minutes")
       .eq("id", "default")
       .maybeSingle();
     if (error) throw error;
     if (!data) {
       const { data: inserted, error: insertError } = await supabase
         .from("order_settings")
-        .insert({ id: "default", min_order_amount: 0 })
-        .select("min_order_amount")
+        .insert({ id: "default", min_order_amount: 0, min_delivery_buffer_minutes: 45 })
+        .select("min_order_amount, min_delivery_buffer_minutes")
         .single();
       if (insertError) throw insertError;
       return mapOrderSettings(inserted);
@@ -500,11 +506,21 @@ export const orderSettingsRepository = {
     return mapOrderSettings(data);
   },
 
-  async updateMinOrderAmount(minOrderAmount: number): Promise<OrderSettingsRecord> {
+  async update(
+    minOrderAmount: number,
+    minDeliveryBufferMinutes: number
+  ): Promise<OrderSettingsRecord> {
     const { data, error } = await supabase
       .from("order_settings")
-      .upsert({ id: "default", min_order_amount: minOrderAmount }, { onConflict: "id" })
-      .select("min_order_amount")
+      .upsert(
+        {
+          id: "default",
+          min_order_amount: minOrderAmount,
+          min_delivery_buffer_minutes: minDeliveryBufferMinutes
+        },
+        { onConflict: "id" }
+      )
+      .select("min_order_amount, min_delivery_buffer_minutes")
       .single();
     if (error) throw error;
     return mapOrderSettings(data);
