@@ -13,6 +13,8 @@ export interface OrderInsertInput {
   promo_discount: number;
   total: number;
   savings: number;
+  cogs_total: number;
+  gross_profit: number;
   pricing_snapshot: unknown;
   promo_code?: string;
   idempotency_key?: string;
@@ -26,6 +28,8 @@ export interface OrderItemInsertInput {
   line_subtotal: number;
   line_discount: number;
   line_total: number;
+  cogs_per_unit: number;
+  line_cogs_total: number;
   pricing_group_slug: string;
 }
 
@@ -47,6 +51,17 @@ export interface OrderRecord {
   pricing_snapshot?: unknown;
 }
 
+export interface ProductCategoryRecord {
+  id: string;
+  slug: string;
+  name: string;
+}
+
+export interface ProductCostRecord {
+  id: string;
+  cogs_per_unit: number;
+}
+
 const mapProduct = (row: any): Product => ({
   id: row.id,
   sku: row.sku,
@@ -55,13 +70,17 @@ const mapProduct = (row: any): Product => ({
   image_url: row.image_url,
   base_price: Number(row.base_price),
   category_slug: row.product_categories.slug,
+  category_name: row.product_categories.name,
   pricing_group_id: row.pricing_group_id,
-  pricing_group_slug: row.pricing_groups.slug,
+  pricing_group_slug: row.pricing_groups?.slug ?? null,
+  pricing_group_name: row.pricing_groups?.name ?? null,
   active: row.active
 });
 
 const mapRule = (row: any): PricingRule => ({
   id: row.id,
+  slug: row.slug,
+  name: row.name,
   pricing_group_id: row.pricing_group_id,
   metric: row.metric,
   aggregation: row.aggregation,
@@ -83,6 +102,17 @@ const mapPromo = (row: any): PromoCode => ({
   active: row.active
 });
 
+const mapCategory = (row: any): ProductCategoryRecord => ({
+  id: row.id,
+  slug: row.slug,
+  name: row.name
+});
+
+const mapProductCost = (row: any): ProductCostRecord => ({
+  id: row.id,
+  cogs_per_unit: Number(row.cogs_per_unit ?? 0)
+});
+
 const sanitizeIdentifier = (value: string): string =>
   value
     .trim()
@@ -92,14 +122,51 @@ const sanitizeIdentifier = (value: string): string =>
     .slice(0, 80);
 
 export const catalogRepository = {
+  async listCategories(): Promise<ProductCategoryRecord[]> {
+    const { data, error } = await supabase
+      .from("product_categories")
+      .select("id, slug, name")
+      .order("name", { ascending: true });
+    if (error) throw error;
+    return (data ?? []).map(mapCategory);
+  },
+
+  async createCategory(payload: { slug: string; name: string }): Promise<ProductCategoryRecord> {
+    const id = sanitizeIdentifier(payload.slug);
+    if (!id) throw new Error("Category slug is required.");
+    const { data, error } = await supabase
+      .from("product_categories")
+      .insert({ id, slug: id, name: payload.name })
+      .select("id, slug, name")
+      .single();
+    if (error) throw error;
+    return mapCategory(data);
+  },
+
+  async updateCategory(categoryId: string, payload: { name?: string }): Promise<ProductCategoryRecord> {
+    const { data, error } = await supabase
+      .from("product_categories")
+      .update({ name: payload.name })
+      .eq("id", categoryId)
+      .select("id, slug, name")
+      .single();
+    if (error) throw error;
+    return mapCategory(data);
+  },
+
+  async deleteCategory(categoryId: string): Promise<void> {
+    const { error } = await supabase.from("product_categories").delete().eq("id", categoryId);
+    if (error) throw error;
+  },
+
   async listProducts(filters: { categorySlug?: string; active?: boolean } = {}): Promise<Product[]> {
     let query = supabase
       .from("products")
       .select(
         `
         id, sku, name, description, image_url, base_price, pricing_group_id, active,
-        product_categories!inner(slug),
-        pricing_groups!inner(slug)
+        product_categories!inner(slug, name),
+        pricing_groups(slug, name)
       `
       )
       .order("created_at", { ascending: false });
@@ -126,8 +193,8 @@ export const catalogRepository = {
       .select(
         `
         id, sku, name, description, image_url, base_price, pricing_group_id, active,
-        product_categories!inner(slug),
-        pricing_groups!inner(slug)
+        product_categories!inner(slug, name),
+        pricing_groups(slug, name)
       `
       )
       .in("id", productIds)
@@ -138,6 +205,16 @@ export const catalogRepository = {
     return (data ?? []).map(mapProduct);
   },
 
+  async getProductCostsByIds(productIds: string[]): Promise<ProductCostRecord[]> {
+    if (productIds.length === 0) return [];
+    const { data, error } = await supabase
+      .from("products")
+      .select("id, cogs_per_unit")
+      .in("id", productIds);
+    if (error) throw error;
+    return (data ?? []).map(mapProductCost);
+  },
+
   async createProduct(payload: {
     sku?: string;
     name: string;
@@ -145,16 +222,29 @@ export const catalogRepository = {
     image_url?: string;
     base_price: number;
     category_slug: string;
-    pricing_group_slug: string;
+    pricing_group_slug?: string | null;
     active: boolean;
   }): Promise<Product> {
-    const [{ data: category, error: categoryError }, { data: pricingGroup, error: groupError }] =
-      await Promise.all([
-        supabase.from("product_categories").select("id").eq("slug", payload.category_slug).single(),
-        supabase.from("pricing_groups").select("id").eq("slug", payload.pricing_group_slug).single()
-      ]);
-    if (categoryError || groupError || !category || !pricingGroup) {
-      throw new Error("Invalid category or pricing group.");
+    const { data: category, error: categoryError } = await supabase
+      .from("product_categories")
+      .select("id")
+      .eq("slug", payload.category_slug)
+      .single();
+    if (categoryError || !category) {
+      throw new Error("Invalid category.");
+    }
+
+    let pricingGroupId: string | null = null;
+    if (payload.pricing_group_slug) {
+      const { data: pricingGroup, error: groupError } = await supabase
+        .from("pricing_groups")
+        .select("id")
+        .eq("slug", payload.pricing_group_slug)
+        .single();
+      if (groupError || !pricingGroup) {
+        throw new Error("Invalid pricing group.");
+      }
+      pricingGroupId = pricingGroup.id;
     }
 
     const resolvedSku = payload.sku?.trim() || sanitizeIdentifier(payload.name);
@@ -172,14 +262,14 @@ export const catalogRepository = {
         image_url: payload.image_url,
         base_price: payload.base_price,
         category_id: category.id,
-        pricing_group_id: pricingGroup.id,
+        pricing_group_id: pricingGroupId,
         active: payload.active
       })
       .select(
         `
         id, sku, name, description, image_url, base_price, pricing_group_id, active,
-        product_categories!inner(slug),
-        pricing_groups!inner(slug)
+        product_categories!inner(slug, name),
+        pricing_groups(slug, name)
       `
       )
       .single();
@@ -209,6 +299,9 @@ export const catalogRepository = {
     }
 
     if (patch.pricing_group_slug !== undefined) {
+      if (patch.pricing_group_slug === null) {
+        nextPatch.pricing_group_id = null;
+      } else {
       const { data: group, error } = await supabase
         .from("pricing_groups")
         .select("id")
@@ -216,6 +309,7 @@ export const catalogRepository = {
         .single();
       if (error || !group) throw new Error("Invalid pricing group.");
       nextPatch.pricing_group_id = group.id;
+      }
     }
 
     const { data, error } = await supabase
@@ -225,8 +319,8 @@ export const catalogRepository = {
       .select(
         `
         id, sku, name, description, image_url, base_price, pricing_group_id, active,
-        product_categories!inner(slug),
-        pricing_groups!inner(slug)
+        product_categories!inner(slug, name),
+        pricing_groups(slug, name)
       `
       )
       .single();
@@ -242,9 +336,12 @@ export const catalogRepository = {
 
 export const pricingRepository = {
   async getRulesByPricingGroupIds(pricingGroupIds: string[]): Promise<PricingRule[]> {
+    if (pricingGroupIds.length === 0) {
+      return [];
+    }
     const { data, error } = await supabase
       .from("pricing_rules")
-      .select("id, pricing_group_id, metric, aggregation, tiers, constraints")
+      .select("id, slug, name, pricing_group_id, metric, aggregation, tiers, constraints")
       .in("pricing_group_id", pricingGroupIds);
 
     if (error) {
@@ -257,9 +354,37 @@ export const pricingRepository = {
   async listRules(): Promise<PricingRule[]> {
     const { data, error } = await supabase
       .from("pricing_rules")
-      .select("id, pricing_group_id, metric, aggregation, tiers, constraints");
+      .select("id, slug, name, pricing_group_id, metric, aggregation, tiers, constraints");
     if (error) throw error;
     return (data ?? []).map(mapRule);
+  },
+
+  async createRule(input: {
+    slug: string;
+    name: string;
+    pricing_group_id: string;
+    metric: "units" | "grams";
+    tiers: unknown;
+    constraints: unknown;
+  }): Promise<PricingRule> {
+    const id = sanitizeIdentifier(input.slug);
+    if (!id) throw new Error("Pricing rule slug is required.");
+    const { data, error } = await supabase
+      .from("pricing_rules")
+      .insert({
+        id,
+        slug: id,
+        name: input.name,
+        pricing_group_id: input.pricing_group_id,
+        metric: input.metric,
+        aggregation: "by_pricing_group",
+        tiers: input.tiers,
+        constraints: input.constraints
+      })
+      .select("id, slug, name, pricing_group_id, metric, aggregation, tiers, constraints")
+      .single();
+    if (error) throw error;
+    return mapRule(data);
   },
 
   async updateRule(ruleId: string, update: { tiers: unknown; constraints: unknown }): Promise<PricingRule> {
@@ -267,7 +392,7 @@ export const pricingRepository = {
       .from("pricing_rules")
       .update(update)
       .eq("id", ruleId)
-      .select("id, pricing_group_id, metric, aggregation, tiers, constraints")
+      .select("id, slug, name, pricing_group_id, metric, aggregation, tiers, constraints")
       .single();
     if (error) throw error;
     return mapRule(data);

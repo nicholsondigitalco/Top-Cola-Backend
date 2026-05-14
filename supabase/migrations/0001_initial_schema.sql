@@ -19,6 +19,8 @@ create table if not exists pricing_groups (
 
 create table if not exists pricing_rules (
   id text primary key,
+  slug text unique not null,
+  name text not null,
   pricing_group_id text not null references pricing_groups(id) on delete cascade,
   metric text not null check (metric in ('units', 'grams')),
   aggregation text not null default 'by_pricing_group',
@@ -35,8 +37,12 @@ create table if not exists products (
   description text not null default '',
   image_url text,
   base_price numeric(10,2) not null check (base_price >= 0),
+  cogs_per_unit numeric(10,2) not null default 0 check (cogs_per_unit >= 0),
+  avg_order_quantity numeric(10,2) not null default 0,
+  avg_discount_per_unit numeric(10,2) not null default 0,
+  avg_profit_margin_per_unit numeric(10,2) not null default 0,
   category_id text not null references product_categories(id) on delete restrict,
-  pricing_group_id text not null references pricing_groups(id) on delete restrict,
+  pricing_group_id text references pricing_groups(id) on delete set null,
   active boolean not null default true,
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now())
@@ -72,6 +78,8 @@ create table if not exists orders (
   promo_discount numeric(10,2) not null,
   total numeric(10,2) not null,
   savings numeric(10,2) not null,
+  cogs_total numeric(10,2) not null default 0 check (cogs_total >= 0),
+  gross_profit numeric(10,2) not null default 0,
   pricing_snapshot jsonb not null,
   promo_code text,
   idempotency_key text unique,
@@ -89,6 +97,8 @@ create table if not exists order_items (
   line_subtotal numeric(10,2) not null,
   line_discount numeric(10,2) not null,
   line_total numeric(10,2) not null,
+  cogs_per_unit numeric(10,2) not null default 0 check (cogs_per_unit >= 0),
+  line_cogs_total numeric(10,2) not null default 0 check (line_cogs_total >= 0),
   pricing_group_slug text not null,
   created_at timestamptz not null default timezone('utc', now())
 );

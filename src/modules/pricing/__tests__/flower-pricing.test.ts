@@ -33,8 +33,10 @@ describe("Flower pricing", () => {
         image_url: null,
         base_price: 10,
         category_slug: "flower",
+        category_name: "Flower",
         pricing_group_id: "flower-premium-group",
         pricing_group_slug: "flower_premium",
+        pricing_group_name: "Flower Premium",
         active: true
       },
       {
@@ -45,8 +47,10 @@ describe("Flower pricing", () => {
         image_url: null,
         base_price: 10,
         category_slug: "flower",
+        category_name: "Flower",
         pricing_group_id: "flower-premium-group",
         pricing_group_slug: "flower_premium",
+        pricing_group_name: "Flower Premium",
         active: true
       }
     ]);
@@ -54,6 +58,8 @@ describe("Flower pricing", () => {
     vi.mocked(pricingRepository.getRulesByPricingGroupIds).mockResolvedValue([
       {
         id: "flower-rule",
+        slug: "flower-rule",
+        name: "Flower Rule",
         pricing_group_id: "flower-premium-group",
         metric: "grams",
         aggregation: "by_pricing_group",
@@ -95,8 +101,10 @@ describe("Flower pricing", () => {
         image_url: null,
         base_price: 3.125,
         category_slug: "flower",
+        category_name: "Flower",
         pricing_group_id: "flower-smalls-group",
         pricing_group_slug: "flower_smalls",
+        pricing_group_name: "Flower Smalls",
         active: true
       }
     ]);
@@ -104,6 +112,8 @@ describe("Flower pricing", () => {
     vi.mocked(pricingRepository.getRulesByPricingGroupIds).mockResolvedValue([
       {
         id: "flower-smalls-rule",
+        slug: "flower-smalls-rule",
+        name: "Flower Smalls Rule",
         pricing_group_id: "flower-smalls-group",
         metric: "grams",
         aggregation: "by_pricing_group",

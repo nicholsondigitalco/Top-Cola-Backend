@@ -32,14 +32,18 @@ describe("PricingEngine", () => {
         image_url: null,
         base_price: 35,
         category_slug: "vapes",
+        category_name: "Vapes",
         pricing_group_id: "group-vape",
         pricing_group_slug: "vape_default",
+        pricing_group_name: "Vape Default",
         active: true
       }
     ]);
     vi.mocked(pricingRepository.getRulesByPricingGroupIds).mockResolvedValue([
       {
         id: "rule-vape",
+        slug: "rule-vape",
+        name: "Vape Rule",
         pricing_group_id: "group-vape",
         metric: "units",
         aggregation: "by_pricing_group",

@@ -1,4 +1,4 @@
-import { orderRepository, promoRepository } from "../data/repositories.js";
+import { catalogRepository, orderRepository, promoRepository } from "../data/repositories.js";
 import { emailService } from "../notifications/email.service.js";
 import { pricingEngine } from "../pricing/pricing.engine.js";
 import type { QuoteItemInput, QuoteResult } from "../pricing/pricing.types.js";
@@ -23,6 +23,15 @@ export class OrdersService {
 
     const quote = await pricingEngine.quote({ items: input.items, promoCode: input.promoCode });
 
+    const roundCurrency = (value: number): number => Math.round((value + Number.EPSILON) * 100) / 100;
+    const productIds = [...new Set(input.items.map((item) => item.productId))];
+    const productCosts = await catalogRepository.getProductCostsByIds(productIds);
+    const costByProductId = new Map(productCosts.map((record) => [record.id, record.cogs_per_unit]));
+    const cogsTotal = roundCurrency(
+      input.items.reduce((sum, item) => sum + (costByProductId.get(item.productId) ?? 0) * item.quantity, 0)
+    );
+    const grossProfit = roundCurrency(quote.total - cogsTotal);
+
     const created = await orderRepository.createOrder(
       {
         customer_name: input.customerName,
@@ -36,6 +45,8 @@ export class OrdersService {
         promo_discount: quote.promoDiscount,
         total: quote.total,
         savings: quote.savings,
+        cogs_total: cogsTotal,
+        gross_profit: grossProfit,
         pricing_snapshot: quote,
         promo_code: input.promoCode,
         idempotency_key: input.idempotencyKey
@@ -48,6 +59,8 @@ export class OrdersService {
         line_subtotal: line.line_subtotal,
         line_discount: line.line_discount,
         line_total: line.line_total,
+        cogs_per_unit: costByProductId.get(line.product_id) ?? 0,
+        line_cogs_total: roundCurrency((costByProductId.get(line.product_id) ?? 0) * line.quantity),
         pricing_group_slug: line.pricing_group_slug
       }))
     );

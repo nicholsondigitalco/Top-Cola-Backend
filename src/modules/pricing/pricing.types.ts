@@ -1,11 +1,9 @@
-export type ProductCategory = "vapes" | "edibles" | "joints" | "flower" | "other";
+export type ProductCategory = string;
 
 export type TierAdjustmentType =
   | "none"
   | "percent"
-  | "fixed_per_unit"
-  | "fixed_total"
-  | "multiplier";
+  | "fixed_per_unit";
 
 export interface PricingTier {
   min: number;
@@ -20,6 +18,8 @@ export interface PricingRuleConstraints {
 
 export interface PricingRule {
   id: string;
+  slug: string;
+  name: string;
   pricing_group_id: string;
   metric: "units" | "grams";
   aggregation: "by_pricing_group";
@@ -35,8 +35,10 @@ export interface Product {
   image_url: string | null;
   base_price: number;
   category_slug: ProductCategory;
-  pricing_group_id: string;
-  pricing_group_slug: string;
+  category_name: string;
+  pricing_group_id: string | null;
+  pricing_group_slug: string | null;
+  pricing_group_name: string | null;
   active: boolean;
 }
 

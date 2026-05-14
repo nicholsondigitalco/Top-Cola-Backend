@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../data/repositories.js", () => ({
+  catalogRepository: {
+    getProductCostsByIds: vi.fn()
+  },
   orderRepository: {
     getByIdempotencyKey: vi.fn(),
     createOrder: vi.fn()
@@ -22,7 +25,7 @@ vi.mock("../../notifications/email.service.js", () => ({
   }
 }));
 
-import { orderRepository, promoRepository } from "../../data/repositories.js";
+import { catalogRepository, orderRepository, promoRepository } from "../../data/repositories.js";
 import { emailService } from "../../notifications/email.service.js";
 import { pricingEngine } from "../../pricing/pricing.engine.js";
 import { OrdersService } from "../orders.service.js";
@@ -36,6 +39,12 @@ describe("OrdersService createOrder", () => {
 
   it("creates an order, stores line items, increments promo usage, and sends notification", async () => {
     vi.mocked(orderRepository.getByIdempotencyKey).mockResolvedValue(null);
+    vi.mocked(catalogRepository.getProductCostsByIds).mockResolvedValue([
+      {
+        id: "00000000-0000-0000-0000-000000009999",
+        cogs_per_unit: 20
+      }
+    ]);
     vi.mocked(pricingEngine.quote).mockResolvedValue({
       subtotal: 100,
       volumeDiscount: 20,

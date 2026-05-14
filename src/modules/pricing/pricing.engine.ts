@@ -19,12 +19,6 @@ const applyTierDiscount = (subtotal: number, metricTotal: number, tier: PricingT
       return roundCurrency(subtotal * (tier.adjustment_value / 100));
     case "fixed_per_unit":
       return roundCurrency(metricTotal * tier.adjustment_value);
-    case "fixed_total":
-      return roundCurrency(tier.adjustment_value);
-    case "multiplier": {
-      const nextTotal = subtotal * tier.adjustment_value;
-      return roundCurrency(subtotal - nextTotal);
-    }
     default:
       return 0;
   }
@@ -77,7 +71,7 @@ const buildQuoteLines = (
     return {
       product_id: entry.product.id,
       product_name: entry.product.name,
-      pricing_group_slug: entry.product.pricing_group_slug,
+      pricing_group_slug: entry.product.pricing_group_slug ?? "no_volume_discount",
       quantity: entry.quantity,
       unit_base_price: entry.product.base_price,
       line_subtotal: lineSubtotal,
@@ -108,9 +102,14 @@ export class PricingEngine {
     }
 
     const grouped = new Map<string, GroupInput[]>();
+    const noDiscountRows: GroupInput[] = [];
     for (const item of input.items) {
       const product = productMap.get(item.productId);
       if (!product) throw new Error(`Missing product ${item.productId}`);
+      if (!product.pricing_group_id) {
+        noDiscountRows.push({ product, quantity: item.quantity });
+        continue;
+      }
       const group = grouped.get(product.pricing_group_id) ?? [];
       group.push({ product, quantity: item.quantity });
       grouped.set(product.pricing_group_id, group);
@@ -125,6 +124,11 @@ export class PricingEngine {
     let subtotal = 0;
     let volumeDiscount = 0;
 
+    if (noDiscountRows.length > 0) {
+      quoteLines.push(...buildQuoteLines(noDiscountRows, 0, noDiscountRows.reduce((sum, row) => sum + row.product.base_price * row.quantity, 0)));
+      subtotal += noDiscountRows.reduce((sum, row) => sum + row.product.base_price * row.quantity, 0);
+    }
+
     for (const [pricingGroupId, groupRows] of grouped.entries()) {
       const rule = ruleMap.get(pricingGroupId);
       if (!rule) {
@@ -133,7 +137,7 @@ export class PricingEngine {
 
       const metricTotal = roundCurrency(groupRows.reduce((sum, row) => sum + row.quantity, 0));
       const itemQuantities = groupRows.map((row) => row.quantity);
-      const groupSlug = groupRows[0].product.pricing_group_slug;
+      const groupSlug = groupRows[0].product.pricing_group_slug ?? pricingGroupId;
 
       validateConstraints(rule, itemQuantities, metricTotal, groupSlug);
 

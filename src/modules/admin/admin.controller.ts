@@ -11,6 +11,9 @@ import { catalogRepository, orderRepository, pricingRepository, promoRepository 
 import {
   AdminLoginSchema,
   AdminOrderStatusSchema,
+  CategoryCreateSchema,
+  CategoryUpdateSchema,
+  PricingRuleCreateSchema,
   PricingRuleUpdateSchema,
   ProductCreateSchema,
   ProductUpdateSchema,
@@ -49,6 +52,43 @@ adminRouter.use(requireAdminAuth);
 adminRouter.get("/admin/products", async (_req, res, next) => {
   try {
     res.json({ products: await catalogRepository.listProducts({}) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.get("/admin/categories", async (_req, res, next) => {
+  try {
+    res.json({ categories: await catalogRepository.listCategories() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.post("/admin/categories", async (req, res, next) => {
+  try {
+    const payload = CategoryCreateSchema.parse(req.body);
+    const category = await catalogRepository.createCategory(payload);
+    res.status(201).json({ category });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.patch("/admin/categories/:categoryId", async (req, res, next) => {
+  try {
+    const payload = CategoryUpdateSchema.parse(req.body);
+    const category = await catalogRepository.updateCategory(req.params.categoryId, payload);
+    res.json({ category });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.delete("/admin/categories/:categoryId", async (req, res, next) => {
+  try {
+    await catalogRepository.deleteCategory(req.params.categoryId);
+    res.status(204).send();
   } catch (error) {
     next(error);
   }
@@ -163,6 +203,23 @@ adminRouter.delete("/admin/promos/:promoId", async (req, res, next) => {
 adminRouter.get("/admin/pricing-rules", async (_req, res, next) => {
   try {
     res.json({ pricingRules: await pricingRepository.listRules() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.post("/admin/pricing-rules", async (req, res, next) => {
+  try {
+    const payload = PricingRuleCreateSchema.parse(req.body);
+    const pricingRule = await pricingRepository.createRule({
+      slug: payload.slug,
+      name: payload.name,
+      pricing_group_id: payload.pricingGroupId,
+      metric: payload.metric,
+      tiers: payload.tiers,
+      constraints: payload.constraints
+    });
+    res.status(201).json({ pricingRule });
   } catch (error) {
     next(error);
   }

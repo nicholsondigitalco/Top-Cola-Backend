@@ -27,12 +27,21 @@ export const ProductCreateSchema = z.object({
   description: z.string().trim().max(1000).default(""),
   imageUrl: z.string().url().optional(),
   basePrice: z.number().nonnegative(),
-  categorySlug: z.enum(["vapes", "edibles", "joints", "flower", "other"]),
-  pricingGroupSlug: z.string().trim().min(2).max(80),
+  categorySlug: z.string().trim().min(2).max(80),
+  pricingGroupSlug: z.string().trim().min(2).max(80).nullable().optional(),
   active: z.boolean().default(true)
 });
 
 export const ProductUpdateSchema = ProductCreateSchema.partial();
+
+export const CategoryCreateSchema = z.object({
+  slug: z.string().trim().min(2).max(80),
+  name: z.string().trim().min(2).max(120)
+});
+
+export const CategoryUpdateSchema = z.object({
+  name: z.string().trim().min(2).max(120)
+});
 
 export const PromoCreateSchema = z.object({
   code: z.string().trim().min(2).max(40),
@@ -56,10 +65,23 @@ export const PricingRuleUpdateSchema = z.object({
       adjustment_type: z.enum([
         "none",
         "percent",
-        "fixed_per_unit",
-        "fixed_total",
-        "multiplier"
+        "fixed_per_unit"
       ]),
+      adjustment_value: z.number().nonnegative()
+    })
+  ),
+  constraints: z.record(z.string(), z.unknown()).default({})
+});
+
+export const PricingRuleCreateSchema = z.object({
+  slug: z.string().trim().min(2).max(120),
+  name: z.string().trim().min(2).max(120),
+  pricingGroupId: z.string().trim().min(2).max(120),
+  metric: z.enum(["units", "grams"]),
+  tiers: z.array(
+    z.object({
+      min: z.number().nonnegative(),
+      adjustment_type: z.enum(["none", "percent", "fixed_per_unit"]),
       adjustment_value: z.number().nonnegative()
     })
   ),
