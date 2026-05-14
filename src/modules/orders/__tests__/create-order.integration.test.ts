@@ -4,6 +4,9 @@ vi.mock("../../data/repositories.js", () => ({
   catalogRepository: {
     getProductCostsByIds: vi.fn()
   },
+  orderSettingsRepository: {
+    get: vi.fn()
+  },
   orderRepository: {
     getByIdempotencyKey: vi.fn(),
     createOrder: vi.fn()
@@ -19,14 +22,12 @@ vi.mock("../../pricing/pricing.engine.js", () => ({
   }
 }));
 
-vi.mock("../../notifications/email.service.js", () => ({
-  emailService: {
-    sendOrderNotification: vi.fn()
-  }
-}));
-
-import { catalogRepository, orderRepository, promoRepository } from "../../data/repositories.js";
-import { emailService } from "../../notifications/email.service.js";
+import {
+  catalogRepository,
+  orderRepository,
+  orderSettingsRepository,
+  promoRepository
+} from "../../data/repositories.js";
 import { pricingEngine } from "../../pricing/pricing.engine.js";
 import { OrdersService } from "../orders.service.js";
 
@@ -37,8 +38,9 @@ describe("OrdersService createOrder", () => {
     vi.resetAllMocks();
   });
 
-  it("creates an order, stores line items, increments promo usage, and sends notification", async () => {
+  it("creates an order, stores line items, and increments promo usage", async () => {
     vi.mocked(orderRepository.getByIdempotencyKey).mockResolvedValue(null);
+    vi.mocked(orderSettingsRepository.get).mockResolvedValue({ min_order_amount: 0 });
     vi.mocked(catalogRepository.getProductCostsByIds).mockResolvedValue([
       {
         id: "00000000-0000-0000-0000-000000009999",
@@ -83,6 +85,5 @@ describe("OrdersService createOrder", () => {
     expect(result.order.id).toBe("order-1");
     expect(orderRepository.createOrder).toHaveBeenCalledTimes(1);
     expect(promoRepository.incrementUsage).toHaveBeenCalledWith("SAVE10");
-    expect(emailService.sendOrderNotification).toHaveBeenCalledTimes(1);
   });
 });

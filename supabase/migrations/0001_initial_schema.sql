@@ -119,3 +119,10 @@ create table if not exists admin_settings (
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now())
 );
+
+create table if not exists order_settings (
+  id text primary key,
+  min_order_amount numeric(10,2) not null default 0 check (min_order_amount >= 0),
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now())
+);

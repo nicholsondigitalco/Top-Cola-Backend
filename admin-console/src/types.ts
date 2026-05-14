@@ -68,3 +68,7 @@ export interface OrderMetrics {
   pendingOrders: number;
   byStatus: Record<string, number>;
 }
+
+export interface OrderSettings {
+  minOrderAmount: number;
+}

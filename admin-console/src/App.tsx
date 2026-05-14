@@ -4,6 +4,7 @@ import { ApiClient } from "./api";
 import type {
   OrderMetrics,
   OrderRecord,
+  OrderSettings,
   PricingRule,
   PricingTier,
   Product,
@@ -13,12 +14,13 @@ import type {
 
 const API_BASE_DEFAULT = "http://localhost:4000";
 const ADMIN_TOKEN_KEY = "top-cola-admin-token";
-type AdminTab = "products" | "promos" | "rules" | "categories";
+type AdminTab = "products" | "promos" | "rules" | "categories" | "settings";
 const ADMIN_TABS: { id: AdminTab; label: string }[] = [
   { id: "products", label: "Products" },
   { id: "promos", label: "Promo Codes" },
   { id: "rules", label: "Pricing Rules" },
-  { id: "categories", label: "Categories" }
+  { id: "categories", label: "Categories" },
+  { id: "settings", label: "Settings" }
 ];
 const STATUS_OPTIONS: OrderRecord["status"][] = [
   "pending",
@@ -44,6 +46,8 @@ export function App() {
   const [rules, setRules] = useState<PricingRule[]>([]);
   const [orders, setOrders] = useState<OrderRecord[]>([]);
   const [metrics, setMetrics] = useState<OrderMetrics | null>(null);
+  const [settings, setSettings] = useState<OrderSettings>({ minOrderAmount: 0 });
+  const [minOrderAmountInput, setMinOrderAmountInput] = useState("0");
   const [productSearch, setProductSearch] = useState("");
   const [productCategoryFilter, setProductCategoryFilter] = useState("all");
   const [promoSearch, setPromoSearch] = useState("");
@@ -103,18 +107,21 @@ export function App() {
     setError(null);
     try {
       await loadCategories();
-      const [productsRes, promosRes, rulesRes, ordersRes, metricsRes] = await Promise.all([
+      const [productsRes, promosRes, rulesRes, ordersRes, metricsRes, settingsRes] = await Promise.all([
         client.request<{ products: Product[] }>("/admin/products"),
         client.request<{ promos: PromoCode[] }>("/admin/promos"),
         client.request<{ pricingRules: PricingRule[] }>("/admin/pricing-rules"),
         client.request<{ orders: OrderRecord[] }>("/admin/orders"),
-        client.request<OrderMetrics>("/admin/metrics/orders")
+        client.request<OrderMetrics>("/admin/metrics/orders"),
+        client.request<OrderSettings>("/admin/settings/order-minimum")
       ]);
       setProducts(productsRes.products);
       setPromos(promosRes.promos);
       setRules(rulesRes.pricingRules);
       setOrders(ordersRes.orders);
       setMetrics(metricsRes);
+      setSettings(settingsRes);
+      setMinOrderAmountInput(settingsRes.minOrderAmount.toString());
       setStatus("Connected");
     } catch (err) {
       setError((err as Error).message);
@@ -162,6 +169,8 @@ export function App() {
     setRules([]);
     setOrders([]);
     setMetrics(null);
+    setSettings({ minOrderAmount: 0 });
+    setMinOrderAmountInput("0");
     setStatus("Logged out");
   };
 
@@ -330,6 +339,24 @@ export function App() {
     try {
       await client.request(`/admin/orders/${orderId}/status`, "PATCH", { status: statusValue });
       await loadAll();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const saveMinimumOrder = async () => {
+    setIsBusy(true);
+    setError(null);
+    try {
+      const nextValue = Number(minOrderAmountInput);
+      const updated = await client.request<OrderSettings>("/admin/settings/order-minimum", "PATCH", {
+        minOrderAmount: Number.isFinite(nextValue) && nextValue >= 0 ? nextValue : 0
+      });
+      setSettings(updated);
+      setMinOrderAmountInput(updated.minOrderAmount.toString());
+      setStatus("Minimum order updated");
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -654,6 +681,31 @@ export function App() {
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                )}
+
+                {adminTab === "settings" && (
+                  <div className="card">
+                    <div className="section-header">
+                      <h3>Order Settings</h3>
+                    </div>
+                    <div className="row">
+                      <Field label="Minimum order amount ($)">
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={minOrderAmountInput}
+                          onChange={(event) => setMinOrderAmountInput(event.target.value)}
+                        />
+                      </Field>
+                    </div>
+                    <div className="actions">
+                      <button type="button" onClick={() => void saveMinimumOrder()} disabled={isBusy}>
+                        Save Minimum Order
+                      </button>
+                    </div>
+                    <p className="status">Current minimum: ${settings.minOrderAmount.toFixed(2)}</p>
                   </div>
                 )}
               </div>

@@ -103,3 +103,7 @@ export const AdminOrderStatusSchema = z.object({
   ]),
   note: z.string().max(500).optional()
 });
+
+export const AdminMinimumOrderSchema = z.object({
+  minOrderAmount: z.number().nonnegative()
+});

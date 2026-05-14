@@ -62,6 +62,10 @@ export interface ProductCostRecord {
   cogs_per_unit: number;
 }
 
+export interface OrderSettingsRecord {
+  min_order_amount: number;
+}
+
 const mapProduct = (row: any): Product => ({
   id: row.id,
   sku: row.sku,
@@ -111,6 +115,10 @@ const mapCategory = (row: any): ProductCategoryRecord => ({
 const mapProductCost = (row: any): ProductCostRecord => ({
   id: row.id,
   cogs_per_unit: Number(row.cogs_per_unit ?? 0)
+});
+
+const mapOrderSettings = (row: any): OrderSettingsRecord => ({
+  min_order_amount: Number(row.min_order_amount ?? 0)
 });
 
 const sanitizeIdentifier = (value: string): string =>
@@ -462,6 +470,37 @@ export const promoRepository = {
       .from("promo_codes")
       .update({ used_count: (data.used_count as number) + 1 })
       .eq("code", code);
+  }
+};
+
+export const orderSettingsRepository = {
+  async get(): Promise<OrderSettingsRecord> {
+    const { data, error } = await supabase
+      .from("order_settings")
+      .select("min_order_amount")
+      .eq("id", "default")
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) {
+      const { data: inserted, error: insertError } = await supabase
+        .from("order_settings")
+        .insert({ id: "default", min_order_amount: 0 })
+        .select("min_order_amount")
+        .single();
+      if (insertError) throw insertError;
+      return mapOrderSettings(inserted);
+    }
+    return mapOrderSettings(data);
+  },
+
+  async updateMinOrderAmount(minOrderAmount: number): Promise<OrderSettingsRecord> {
+    const { data, error } = await supabase
+      .from("order_settings")
+      .upsert({ id: "default", min_order_amount: minOrderAmount }, { onConflict: "id" })
+      .select("min_order_amount")
+      .single();
+    if (error) throw error;
+    return mapOrderSettings(data);
   }
 };
 

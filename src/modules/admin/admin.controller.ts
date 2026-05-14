@@ -7,8 +7,15 @@ import {
   recordLoginFailure,
   requireAdminAuth
 } from "../../middleware/adminAuth.js";
-import { catalogRepository, orderRepository, pricingRepository, promoRepository } from "../data/repositories.js";
 import {
+  catalogRepository,
+  orderRepository,
+  orderSettingsRepository,
+  pricingRepository,
+  promoRepository
+} from "../data/repositories.js";
+import {
+  AdminMinimumOrderSchema,
   AdminLoginSchema,
   AdminOrderStatusSchema,
   CategoryCreateSchema,
@@ -278,6 +285,25 @@ adminRouter.get("/admin/metrics/orders", async (_req, res, next) => {
       pendingOrders: byStatus.pending ?? 0,
       byStatus
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.get("/admin/settings/order-minimum", async (_req, res, next) => {
+  try {
+    const settings = await orderSettingsRepository.get();
+    res.json({ minOrderAmount: settings.min_order_amount });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.patch("/admin/settings/order-minimum", async (req, res, next) => {
+  try {
+    const payload = AdminMinimumOrderSchema.parse(req.body);
+    const settings = await orderSettingsRepository.updateMinOrderAmount(payload.minOrderAmount);
+    res.json({ minOrderAmount: settings.min_order_amount });
   } catch (error) {
     next(error);
   }

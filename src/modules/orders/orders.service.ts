@@ -1,5 +1,9 @@
-import { catalogRepository, orderRepository, promoRepository } from "../data/repositories.js";
-import { emailService } from "../notifications/email.service.js";
+import {
+  catalogRepository,
+  orderRepository,
+  orderSettingsRepository,
+  promoRepository
+} from "../data/repositories.js";
 import { pricingEngine } from "../pricing/pricing.engine.js";
 import type { QuoteItemInput, QuoteResult } from "../pricing/pricing.types.js";
 
@@ -22,6 +26,10 @@ export class OrdersService {
     }
 
     const quote = await pricingEngine.quote({ items: input.items, promoCode: input.promoCode });
+    const settings = await orderSettingsRepository.get();
+    if (quote.total < settings.min_order_amount) {
+      throw new Error(`Minimum order is $${settings.min_order_amount.toFixed(2)}.`);
+    }
 
     const roundCurrency = (value: number): number => Math.round((value + Number.EPSILON) * 100) / 100;
     const productIds = [...new Set(input.items.map((item) => item.productId))];
@@ -68,15 +76,6 @@ export class OrdersService {
     if (input.promoCode) {
       await promoRepository.incrementUsage(input.promoCode);
     }
-
-    await emailService.sendOrderNotification({
-      orderId: created.id,
-      customerName: input.customerName,
-      customerPhone: input.customerPhone,
-      deliveryAddress: input.deliveryAddress,
-      deliveryInstructions: input.deliveryInstructions,
-      quote
-    });
 
     return { order: created, quote };
   }
