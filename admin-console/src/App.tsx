@@ -24,12 +24,16 @@ const ADMIN_TABS: { id: AdminTab; label: string }[] = [
 ];
 const STATUS_OPTIONS: OrderRecord["status"][] = [
   "pending",
-  "confirmed",
-  "preparing",
   "out_for_delivery",
-  "delivered",
+  "complete",
   "cancelled"
 ];
+const STATUS_LABELS: Record<OrderRecord["status"], string> = {
+  pending: "Pending",
+  out_for_delivery: "Out for Delivery",
+  complete: "Complete",
+  cancelled: "Cancelled"
+};
 type AddModalKind = "product" | "promo" | "rule" | "category" | null;
 
 export function App() {
@@ -52,6 +56,7 @@ export function App() {
   const [productCategoryFilter, setProductCategoryFilter] = useState("all");
   const [promoSearch, setPromoSearch] = useState("");
   const [orderSearch, setOrderSearch] = useState("");
+  const [orderStatusFilter, setOrderStatusFilter] = useState<"all" | OrderRecord["status"]>("all");
   const [adminTab, setAdminTab] = useState<AdminTab>("products");
 
   const [newProduct, setNewProduct] = useState({
@@ -392,9 +397,19 @@ export function App() {
     return (
       order.id.toLowerCase().includes(search) ||
       order.customer_name.toLowerCase().includes(search) ||
-      order.status.toLowerCase().includes(search)
+      STATUS_LABELS[order.status].toLowerCase().includes(search)
     );
   });
+  const filteredOrderRows =
+    orderStatusFilter === "all"
+      ? orderRows
+      : orderRows.filter((order) => order.status === orderStatusFilter);
+  const ordersByStatus = STATUS_OPTIONS.map((status) => ({
+    status,
+    label: STATUS_LABELS[status],
+    rows: filteredOrderRows.filter((order) => order.status === status)
+  }));
+  const pendingOrderCount = orders.filter((order) => order.status === "pending").length;
 
   const productGroups = [
     ...new Set([
@@ -453,7 +468,14 @@ export function App() {
               Admin
             </NavLink>
             <NavLink to="/orders" className={({ isActive }) => `nav-link ${isActive ? "active-link" : ""}`}>
-              Orders
+              {({ isActive }) => (
+                <span className="orders-link-label">
+                  Orders
+                  {!isActive && pendingOrderCount > 0 && (
+                    <span className="pending-alert-pill">{pendingOrderCount} Pending</span>
+                  )}
+                </span>
+              )}
             </NavLink>
           </nav>
           <div className="site-actions">
@@ -720,7 +742,17 @@ export function App() {
                   <div className="metrics-grid">
                     {Object.entries(metrics?.byStatus ?? {}).map(([statusName, count]) => (
                       <div className="metric-chip" key={statusName}>
-                        <span>{statusName}</span>
+                        <span>
+                          {statusName === "pending"
+                            ? "Pending"
+                            : statusName === "out_for_delivery"
+                              ? "Out for Delivery"
+                              : statusName === "complete"
+                                ? "Complete"
+                                : statusName === "cancelled"
+                                  ? "Cancelled"
+                                  : statusName}
+                        </span>
                         <strong>{count}</strong>
                       </div>
                     ))}
@@ -730,53 +762,88 @@ export function App() {
                 <div className="card">
                   <div className="section-header">
                     <h3>Order Queue</h3>
-                    <input
-                      className="search-input"
-                      placeholder="Search order, customer, or status"
-                      value={orderSearch}
-                      onChange={(event) => setOrderSearch(event.target.value)}
-                    />
+                    <div className="section-actions">
+                      <select
+                        className="small-action-btn"
+                        value={orderStatusFilter}
+                        onChange={(event) =>
+                          setOrderStatusFilter(event.target.value as "all" | OrderRecord["status"])
+                        }
+                      >
+                        <option value="all">All Statuses</option>
+                        {STATUS_OPTIONS.map((status) => (
+                          <option key={status} value={status}>
+                            {STATUS_LABELS[status]}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        className="search-input"
+                        placeholder="Search order, customer, or status"
+                        value={orderSearch}
+                        onChange={(event) => setOrderSearch(event.target.value)}
+                      />
+                    </div>
                   </div>
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>ID</th>
-                        <th>Customer</th>
-                        <th>Status</th>
-                        <th>Savings</th>
-                        <th>Total</th>
-                        <th>Created</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {orderRows.map((order) => (
-                        <tr key={order.id}>
-                          <td>
-                            <strong>{order.id}</strong>
-                          </td>
-                          <td>
-                            <strong>{order.customer_name}</strong>
-                            <div className="muted">{order.customer_phone}</div>
-                          </td>
-                          <td>
-                            <select
-                              value={order.status}
-                              onChange={(e) => void updateOrderStatus(order.id, e.target.value as OrderRecord["status"])}
-                            >
-                              {STATUS_OPTIONS.map((statusOption) => (
-                                <option key={statusOption} value={statusOption}>
-                                  {statusOption}
-                                </option>
+                  <div className="order-buckets">
+                    {ordersByStatus.map((bucket) => (
+                      <div
+                        key={bucket.status}
+                        className={`order-bucket ${bucket.status === "pending" && bucket.rows.length > 0 ? "pending-highlight" : ""}`}
+                      >
+                        <div className="bucket-header">
+                          <h4>{bucket.label}</h4>
+                          <span className="bucket-count">{bucket.rows.length}</span>
+                        </div>
+                        {bucket.rows.length === 0 ? (
+                          <p className="muted">No orders in this status.</p>
+                        ) : (
+                          <table className="data-table">
+                            <thead>
+                              <tr>
+                                <th>ID</th>
+                                <th>Customer</th>
+                                <th>Status</th>
+                                <th>Savings</th>
+                                <th>Total</th>
+                                <th>Created</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {bucket.rows.map((order) => (
+                                <tr key={order.id}>
+                                  <td>
+                                    <strong>{order.id}</strong>
+                                  </td>
+                                  <td>
+                                    <strong>{order.customer_name}</strong>
+                                    <div className="muted">{order.customer_phone}</div>
+                                  </td>
+                                  <td>
+                                    <select
+                                      value={order.status}
+                                      onChange={(e) =>
+                                        void updateOrderStatus(order.id, e.target.value as OrderRecord["status"])
+                                      }
+                                    >
+                                      {STATUS_OPTIONS.map((statusOption) => (
+                                        <option key={statusOption} value={statusOption}>
+                                          {STATUS_LABELS[statusOption]}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </td>
+                                  <td>${Number(order.savings).toFixed(2)}</td>
+                                  <td>${Number(order.total).toFixed(2)}</td>
+                                  <td>{new Date(order.created_at).toLocaleString()}</td>
+                                </tr>
                               ))}
-                            </select>
-                          </td>
-                          <td>${Number(order.savings).toFixed(2)}</td>
-                          <td>${Number(order.total).toFixed(2)}</td>
-                          <td>{new Date(order.created_at).toLocaleString()}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             }

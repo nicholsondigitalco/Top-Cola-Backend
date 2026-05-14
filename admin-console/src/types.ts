@@ -53,7 +53,7 @@ export interface PricingConstraints {
 
 export interface OrderRecord {
   id: string;
-  status: "pending" | "confirmed" | "preparing" | "out_for_delivery" | "delivered" | "cancelled";
+  status: "pending" | "out_for_delivery" | "complete" | "cancelled";
   customer_name: string;
   customer_phone: string;
   customer_email: string | null;

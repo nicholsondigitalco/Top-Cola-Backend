@@ -7,7 +7,7 @@ export interface OrderInsertInput {
   customer_email?: string;
   delivery_address: string;
   delivery_instructions?: string;
-  status: "pending" | "confirmed" | "preparing" | "out_for_delivery" | "delivered" | "cancelled";
+  status: "pending" | "out_for_delivery" | "complete" | "cancelled";
   subtotal: number;
   volume_discount: number;
   promo_discount: number;
@@ -35,7 +35,7 @@ export interface OrderItemInsertInput {
 
 export interface OrderRecord {
   id: string;
-  status: string;
+  status: "pending" | "out_for_delivery" | "complete" | "cancelled";
   created_at: string;
   customer_name: string;
   customer_phone: string;

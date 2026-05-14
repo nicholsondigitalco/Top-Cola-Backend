@@ -72,7 +72,7 @@ create table if not exists orders (
   customer_email text,
   delivery_address text not null,
   delivery_instructions text,
-  status text not null default 'pending' check (status in ('pending', 'confirmed', 'preparing', 'out_for_delivery', 'delivered', 'cancelled')),
+  status text not null default 'pending' check (status in ('pending', 'out_for_delivery', 'complete', 'cancelled')),
   subtotal numeric(10,2) not null,
   volume_discount numeric(10,2) not null,
   promo_discount numeric(10,2) not null,

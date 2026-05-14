@@ -93,14 +93,7 @@ export const AdminLoginSchema = z.object({
 });
 
 export const AdminOrderStatusSchema = z.object({
-  status: z.enum([
-    "pending",
-    "confirmed",
-    "preparing",
-    "out_for_delivery",
-    "delivered",
-    "cancelled"
-  ]),
+  status: z.enum(["pending", "out_for_delivery", "complete", "cancelled"]),
   note: z.string().max(500).optional()
 });
 
