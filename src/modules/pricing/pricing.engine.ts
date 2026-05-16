@@ -56,6 +56,8 @@ const validateConstraints = (rule: PricingRule, itemQuantities: number[], metric
 interface GroupInput {
   product: Product;
   quantity: number;
+  variationId?: string;
+  variationName?: string;
 }
 
 const buildQuoteLines = (
@@ -70,7 +72,11 @@ const buildQuoteLines = (
     const lineTotal = roundCurrency(lineSubtotal - proportionalDiscount);
     return {
       product_id: entry.product.id,
-      product_name: entry.product.name,
+      product_name: entry.variationName
+        ? `${entry.product.name} (${entry.variationName})`
+        : entry.product.name,
+      variation_id: entry.variationId,
+      variation_name: entry.variationName,
       pricing_group_slug: entry.product.pricing_group_slug ?? "no_volume_discount",
       quantity: entry.quantity,
       unit_base_price: entry.product.base_price,
@@ -106,12 +112,30 @@ export class PricingEngine {
     for (const item of input.items) {
       const product = productMap.get(item.productId);
       if (!product) throw new Error(`Missing product ${item.productId}`);
+      let variationName: string | undefined;
+      if (item.variationId) {
+        const selected = (product.variations ?? []).find((variation) => variation.id === item.variationId);
+        if (!selected) {
+          throw new Error(`Variation ${item.variationId} is not valid for ${product.name}.`);
+        }
+        variationName = selected.name;
+      }
       if (!product.pricing_group_id) {
-        noDiscountRows.push({ product, quantity: item.quantity });
+        noDiscountRows.push({
+          product,
+          quantity: item.quantity,
+          variationId: item.variationId,
+          variationName
+        });
         continue;
       }
       const group = grouped.get(product.pricing_group_id) ?? [];
-      group.push({ product, quantity: item.quantity });
+      group.push({
+        product,
+        quantity: item.quantity,
+        variationId: item.variationId,
+        variationName
+      });
       grouped.set(product.pricing_group_id, group);
     }
 

@@ -8,6 +8,7 @@ import type {
   PricingRule,
   PricingTier,
   Product,
+  ProductVariation,
   ProductCategory,
   PromoCode
 } from "./types";
@@ -36,6 +37,70 @@ const STATUS_LABELS: Record<OrderRecord["status"], string> = {
 };
 type AddModalKind = "product" | "promo" | "rule" | "category" | null;
 type OrderDateFilter = "today" | "yesterday" | "last7" | "all";
+
+const normalizeVariationId = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+
+const parseVariationInput = (value: string): ProductVariation[] => {
+  const entries = value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const seen = new Set<string>();
+  const variations: ProductVariation[] = [];
+  for (const entry of entries) {
+    const id = normalizeVariationId(entry);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    variations.push({ id, name: entry });
+  }
+  return variations;
+};
+
+const serializeVariations = (variations?: ProductVariation[]): string =>
+  (variations ?? []).map((variation) => variation.name).join(", ");
+
+const formatScheduledTime = (value?: string | null): string => {
+  if (!value) return "ASAP";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "ASAP";
+
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const targetDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+  const time = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (targetDay.getTime() === today.getTime()) return `Today at ${time}`;
+  if (targetDay.getTime() === tomorrow.getTime()) return `Tomorrow at ${time}`;
+
+  const day = date.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+  return `${day} at ${time}`;
+};
+
+const formatOrderPlacedTime = (value: string): string => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const targetDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+  const time = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (targetDay.getTime() === today.getTime()) return `Today at ${time}`;
+  if (targetDay.getTime() === yesterday.getTime()) return `Yesterday at ${time}`;
+
+  const day = date.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+  return `${day} at ${time}`;
+};
 
 export function App() {
   const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? API_BASE_DEFAULT;
@@ -75,6 +140,7 @@ export function App() {
     basePrice: "0",
     categorySlug: "vapes",
     pricingGroupSlug: "",
+    variationsText: "",
     active: true
   });
 
@@ -97,6 +163,7 @@ export function App() {
     firstTierValue: "0"
   });
   const [categoryDrafts, setCategoryDrafts] = useState<Record<string, string>>({});
+  const [productVariationDrafts, setProductVariationDrafts] = useState<Record<string, string>>({});
   const [activeAddModal, setActiveAddModal] = useState<AddModalKind>(null);
 
   const client = useMemo(() => new ApiClient(apiBaseUrl, token), [apiBaseUrl, token]);
@@ -158,6 +225,16 @@ export function App() {
     }
   }, [token, adminTab]);
 
+  useEffect(() => {
+    setProductVariationDrafts((current) => {
+      const next: Record<string, string> = {};
+      for (const product of products) {
+        next[product.id] = current[product.id] ?? serializeVariations(product.variations);
+      }
+      return next;
+    });
+  }, [products]);
+
   const login = async (event: FormEvent) => {
     event.preventDefault();
     setError(null);
@@ -207,10 +284,33 @@ export function App() {
         basePrice: Number(newProduct.basePrice),
         categorySlug: newProduct.categorySlug,
         pricingGroupSlug: newProduct.pricingGroupSlug || null,
+        variations: parseVariationInput(newProduct.variationsText),
         active: newProduct.active
       });
-      setNewProduct((prev) => ({ ...prev, sku: "", name: "", description: "", imageUrl: "" }));
+      setNewProduct((prev) => ({
+        ...prev,
+        sku: "",
+        name: "",
+        description: "",
+        imageUrl: "",
+        variationsText: ""
+      }));
       setActiveAddModal(null);
+      await loadAll();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const saveProductVariations = async (productId: string) => {
+    setIsBusy(true);
+    setError(null);
+    try {
+      await client.request<{ product: Product }>(`/admin/products/${productId}`, "PATCH", {
+        variations: parseVariationInput(productVariationDrafts[productId] ?? "")
+      });
       await loadAll();
     } catch (err) {
       setError((err as Error).message);
@@ -402,7 +502,8 @@ export function App() {
       product.category_name.toLowerCase().includes(search) ||
       product.category_slug.toLowerCase().includes(search) ||
       (product.pricing_group_name ?? "").toLowerCase().includes(search) ||
-      (product.pricing_group_slug ?? "no_volume_discount").toLowerCase().includes(search)
+      (product.pricing_group_slug ?? "no_volume_discount").toLowerCase().includes(search) ||
+      (product.variations ?? []).some((variation) => variation.name.toLowerCase().includes(search))
     );
   });
 
@@ -461,12 +562,21 @@ export function App() {
     rows: filteredOrderRows.filter((order) => order.status === status)
   }));
   const pendingOrderCount = orders.filter((order) => order.status === "pending").length;
-  const getOrderItemsSummary = (order: OrderRecord): string => {
+  const renderOrderItemsSummary = (order: OrderRecord): ReactNode => {
     const items = order.pricing_snapshot?.items ?? [];
-    if (items.length === 0) return "No item detail";
-    return items
-      .map((item) => `${item.product_name ?? "Item"} x${item.quantity ?? 1}`)
-      .join(", ");
+    if (items.length === 0) {
+      return <span className="order-item-pill-empty">No item detail</span>;
+    }
+
+    return (
+      <div className="order-item-tags">
+        {items.map((item, index) => (
+          <span className="order-item-pill" key={`${order.id}-${item.product_name ?? "item"}-${index}`}>
+            {item.product_name ?? "Item"} x{item.quantity ?? 1}
+          </span>
+        ))}
+      </div>
+    );
   };
 
   const productGroups = [
@@ -615,6 +725,7 @@ export function App() {
                         <th>Product</th>
                         <th>Category</th>
                         <th>Pricing Group</th>
+                        <th>Variations</th>
                         <th>Avg Qty</th>
                         <th>Avg Discount / Unit</th>
                         <th>Avg Profit / Unit</th>
@@ -643,6 +754,40 @@ export function App() {
                           <td>
                             {p.pricing_group_name ?? p.pricing_group_slug ?? "No volume discount"}
                             <div className="muted">{p.pricing_group_slug ?? "none"}</div>
+                          </td>
+                          <td>
+                            <div className="product-variation-tags">
+                              {(p.variations ?? []).length > 0 ? (
+                                (p.variations ?? []).map((variation) => (
+                                  <span key={`${p.id}-${variation.id}`} className="product-variation-pill">
+                                    {variation.name}
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="product-variation-pill-empty">No variations</span>
+                              )}
+                            </div>
+                            <input
+                              className="variation-input"
+                              placeholder="Comma-separated variations"
+                              value={productVariationDrafts[p.id] ?? ""}
+                              onChange={(event) =>
+                                setProductVariationDrafts((current) => ({
+                                  ...current,
+                                  [p.id]: event.target.value
+                                }))
+                              }
+                            />
+                            <div className="actions">
+                              <button
+                                type="button"
+                                className="small-action-btn"
+                                disabled={isBusy}
+                                onClick={() => void saveProductVariations(p.id)}
+                              >
+                                Save Variations
+                              </button>
+                            </div>
                           </td>
                           <td>{Number(p.avg_order_quantity ?? 0).toFixed(2)}</td>
                           <td>${Number(p.avg_discount_per_unit ?? 0).toFixed(2)}</td>
@@ -896,7 +1041,7 @@ export function App() {
                                 <th>Price</th>
                                 <th>Profit</th>
                                 <th>Scheduled</th>
-                                <th>Time</th>
+                                <th>Order Placed</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -910,7 +1055,7 @@ export function App() {
                                     <div className="muted">{order.customer_phone}</div>
                                   </td>
                                   <td>{order.delivery_address}</td>
-                                  <td>{getOrderItemsSummary(order)}</td>
+                                  <td>{renderOrderItemsSummary(order)}</td>
                                   <td>
                                     <select
                                       value={order.status}
@@ -936,12 +1081,8 @@ export function App() {
                                   <td>{order.payment_method === "zelle" ? "Zelle" : "Cash"}</td>
                                   <td>${Number(order.total).toFixed(2)}</td>
                                   <td>${Number(order.gross_profit ?? 0).toFixed(2)}</td>
-                                  <td>
-                                    {order.scheduled_delivery_time
-                                      ? new Date(order.scheduled_delivery_time).toLocaleString()
-                                      : "ASAP"}
-                                  </td>
-                                  <td>{new Date(order.created_at).toLocaleString()}</td>
+                                  <td>{formatScheduledTime(order.scheduled_delivery_time)}</td>
+                                  <td>{formatOrderPlacedTime(order.created_at)}</td>
                                 </tr>
                               ))}
                             </tbody>
@@ -999,6 +1140,13 @@ export function App() {
             </Field>
             <Field label="Description">
               <textarea value={newProduct.description} onChange={(e) => setNewProduct((p) => ({ ...p, description: e.target.value }))} />
+            </Field>
+            <Field label="Variations (optional)">
+              <input
+                placeholder="e.g. Sativa, Hybrid, Indica"
+                value={newProduct.variationsText}
+                onChange={(e) => setNewProduct((p) => ({ ...p, variationsText: e.target.value }))}
+              />
             </Field>
             <div style={{ marginTop: 10 }} className="actions">
               <button type="submit" disabled={isBusy}>Add Product</button>

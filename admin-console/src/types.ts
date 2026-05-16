@@ -9,10 +9,16 @@ export interface Product {
   category_name: string;
   pricing_group_slug: string | null;
   pricing_group_name: string | null;
+  variations?: ProductVariation[];
   avg_order_quantity?: number;
   avg_discount_per_unit?: number;
   avg_profit_margin_per_unit?: number;
   active: boolean;
+}
+
+export interface ProductVariation {
+  id: string;
+  name: string;
 }
 
 export interface ProductCategory {
@@ -72,6 +78,8 @@ export interface OrderRecord {
     items?: Array<{
       product_name?: string;
       quantity?: number;
+      variation_id?: string;
+      variation_name?: string;
     }>;
   };
   created_at: string;

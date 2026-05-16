@@ -469,6 +469,69 @@ button.danger {
   background: linear-gradient(180deg, #f0fdf4, #fff);
 }
 
+.order-item-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.order-item-pill,
+.order-item-pill-empty {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.order-item-pill {
+  color: #1e3a8a;
+  background: #dbeafe;
+  border: 1px solid #bfdbfe;
+}
+
+.order-item-pill-empty {
+  color: #334155;
+  background: #e2e8f0;
+  border: 1px solid #cbd5e1;
+}
+
+.product-variation-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.product-variation-pill,
+.product-variation-pill-empty {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.product-variation-pill {
+  color: #0f766e;
+  background: #ccfbf1;
+  border: 1px solid #99f6e4;
+}
+
+.product-variation-pill-empty {
+  color: #334155;
+  background: #e2e8f0;
+  border: 1px solid #cbd5e1;
+}
+
+.variation-input {
+  width: 100%;
+  margin-top: 2px;
+  margin-bottom: 6px;
+}
+
 .bucket-header {
   display: flex;
   justify-content: space-between;

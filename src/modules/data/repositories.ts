@@ -1,5 +1,5 @@
 import { supabase } from "../../lib/supabase.js";
-import type { PricingRule, Product, PromoCode } from "../pricing/pricing.types.js";
+import type { PricingRule, Product, ProductVariation, PromoCode } from "../pricing/pricing.types.js";
 
 export interface OrderInsertInput {
   customer_name: string;
@@ -83,6 +83,7 @@ const mapProduct = (row: any): Product => ({
   pricing_group_id: row.pricing_group_id,
   pricing_group_slug: row.pricing_groups?.slug ?? null,
   pricing_group_name: row.pricing_groups?.name ?? null,
+  variations: mapProductVariations(row.variations),
   avg_order_quantity: Number(row.avg_order_quantity ?? 0),
   avg_discount_per_unit: Number(row.avg_discount_per_unit ?? 0),
   avg_profit_margin_per_unit: Number(row.avg_profit_margin_per_unit ?? 0),
@@ -129,6 +130,22 @@ const mapOrderSettings = (row: any): OrderSettingsRecord => ({
   min_order_amount: Number(row.min_order_amount ?? 0),
   min_delivery_buffer_minutes: Number(row.min_delivery_buffer_minutes ?? 45)
 });
+
+const mapProductVariations = (value: unknown): ProductVariation[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const maybeId = "id" in item ? (item as any).id : undefined;
+      const maybeName = "name" in item ? (item as any).name : undefined;
+      if (typeof maybeId !== "string" || typeof maybeName !== "string") return null;
+      const id = maybeId.trim();
+      const name = maybeName.trim();
+      if (!id || !name) return null;
+      return { id, name };
+    })
+    .filter((item): item is ProductVariation => Boolean(item));
+};
 
 const sanitizeIdentifier = (value: string): string =>
   value
@@ -181,7 +198,7 @@ export const catalogRepository = {
       .from("products")
       .select(
         `
-        id, sku, name, description, image_url, base_price, pricing_group_id, active,
+        id, sku, name, description, image_url, base_price, pricing_group_id, variations, active,
         avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
         pricing_groups(slug, name)
@@ -210,7 +227,7 @@ export const catalogRepository = {
       .from("products")
       .select(
         `
-        id, sku, name, description, image_url, base_price, pricing_group_id, active,
+        id, sku, name, description, image_url, base_price, pricing_group_id, variations, active,
         avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
         pricing_groups(slug, name)
@@ -242,6 +259,7 @@ export const catalogRepository = {
     base_price: number;
     category_slug: string;
     pricing_group_slug?: string | null;
+    variations?: ProductVariation[];
     active: boolean;
   }): Promise<Product> {
     const { data: category, error: categoryError } = await supabase
@@ -282,11 +300,12 @@ export const catalogRepository = {
         base_price: payload.base_price,
         category_id: category.id,
         pricing_group_id: pricingGroupId,
+        variations: payload.variations ?? [],
         active: payload.active
       })
       .select(
         `
-        id, sku, name, description, image_url, base_price, pricing_group_id, active,
+        id, sku, name, description, image_url, base_price, pricing_group_id, variations, active,
         avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
         pricing_groups(slug, name)
@@ -306,6 +325,7 @@ export const catalogRepository = {
     if (patch.description !== undefined) nextPatch.description = patch.description;
     if (patch.image_url !== undefined) nextPatch.image_url = patch.image_url;
     if (patch.base_price !== undefined) nextPatch.base_price = patch.base_price;
+    if (patch.variations !== undefined) nextPatch.variations = patch.variations;
     if (patch.active !== undefined) nextPatch.active = patch.active;
 
     if (patch.category_slug !== undefined) {
@@ -338,7 +358,7 @@ export const catalogRepository = {
       .eq("id", productId)
       .select(
         `
-        id, sku, name, description, image_url, base_price, pricing_group_id, active,
+        id, sku, name, description, image_url, base_price, pricing_group_id, variations, active,
         avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
         pricing_groups(slug, name)

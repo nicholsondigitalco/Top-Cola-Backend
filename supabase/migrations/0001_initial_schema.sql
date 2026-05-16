@@ -41,6 +41,7 @@ create table if not exists products (
   avg_order_quantity numeric(10,2) not null default 0,
   avg_discount_per_unit numeric(10,2) not null default 0,
   avg_profit_margin_per_unit numeric(10,2) not null default 0,
+  variations jsonb not null default '[]'::jsonb,
   category_id text not null references product_categories(id) on delete restrict,
   pricing_group_id text references pricing_groups(id) on delete set null,
   active boolean not null default true,

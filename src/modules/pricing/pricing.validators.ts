@@ -2,7 +2,13 @@ import { z } from "zod";
 
 export const QuoteItemSchema = z.object({
   productId: z.string().trim().min(1).max(120),
-  quantity: z.number().positive()
+  quantity: z.number().positive(),
+  variationId: z.string().trim().min(1).max(120).optional()
+});
+
+const ProductVariationSchema = z.object({
+  id: z.string().trim().min(1).max(80),
+  name: z.string().trim().min(1).max(120)
 });
 
 export const QuoteRequestSchema = z.object({
@@ -31,6 +37,7 @@ export const ProductCreateSchema = z.object({
   basePrice: z.number().nonnegative(),
   categorySlug: z.string().trim().min(2).max(80),
   pricingGroupSlug: z.string().trim().min(2).max(80).nullable().optional(),
+  variations: z.array(ProductVariationSchema).max(50).optional(),
   active: z.boolean().default(true)
 });
 

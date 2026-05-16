@@ -112,6 +112,7 @@ adminRouter.post("/admin/products", async (req, res, next) => {
       base_price: payload.basePrice,
       category_slug: payload.categorySlug,
       pricing_group_slug: payload.pricingGroupSlug,
+      variations: payload.variations,
       active: payload.active
     });
     res.status(201).json({ product });
@@ -131,6 +132,7 @@ adminRouter.patch("/admin/products/:productId", async (req, res, next) => {
       base_price: payload.basePrice,
       category_slug: payload.categorySlug,
       pricing_group_slug: payload.pricingGroupSlug,
+      variations: payload.variations,
       active: payload.active
     });
     res.json({ product });

@@ -42,12 +42,19 @@ export interface Product {
   avg_order_quantity?: number;
   avg_discount_per_unit?: number;
   avg_profit_margin_per_unit?: number;
+  variations?: ProductVariation[];
   active: boolean;
 }
 
 export interface QuoteItemInput {
   productId: string;
   quantity: number;
+  variationId?: string;
+}
+
+export interface ProductVariation {
+  id: string;
+  name: string;
 }
 
 export interface PromoCode {
@@ -67,6 +74,8 @@ export interface PromoCode {
 export interface QuoteLine {
   product_id: string;
   product_name: string;
+  variation_id?: string;
+  variation_name?: string;
   pricing_group_slug: string;
   quantity: number;
   unit_base_price: number;
