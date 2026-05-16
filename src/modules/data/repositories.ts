@@ -1,5 +1,5 @@
 import { supabase } from "../../lib/supabase.js";
-import type { PricingRule, Product, ProductVariation, PromoCode } from "../pricing/pricing.types.js";
+import type { PricingRule, Product, ProductImage, ProductVariation, PromoCode } from "../pricing/pricing.types.js";
 
 export interface OrderInsertInput {
   customer_name: string;
@@ -66,6 +66,13 @@ export interface ProductCostRecord {
   cogs_per_unit: number;
 }
 
+export interface ProductImageRecord extends ProductImage {
+  product_id: string;
+  storage_path: string;
+  alt_text: string | null;
+  created_at: string;
+}
+
 export interface OrderSettingsRecord {
   min_order_amount: number;
   min_delivery_buffer_minutes: number;
@@ -83,6 +90,20 @@ const mapProduct = (row: any): Product => ({
   pricing_group_id: row.pricing_group_id,
   pricing_group_slug: row.pricing_groups?.slug ?? null,
   pricing_group_name: row.pricing_groups?.name ?? null,
+  primary_image_url: row.image_url,
+  gallery_images: Array.isArray(row.product_images)
+    ? row.product_images
+        .map((image: any) => ({
+          id: image.id,
+          image_url: image.image_url,
+          is_primary: Boolean(image.is_primary),
+          sort_order: Number(image.sort_order ?? 0)
+        }))
+        .sort((a: any, b: any) => {
+          if (a.is_primary === b.is_primary) return a.sort_order - b.sort_order;
+          return a.is_primary ? -1 : 1;
+        })
+    : [],
   variations: mapProductVariations(row.variations),
   avg_order_quantity: Number(row.avg_order_quantity ?? 0),
   avg_discount_per_unit: Number(row.avg_discount_per_unit ?? 0),
@@ -124,6 +145,17 @@ const mapCategory = (row: any): ProductCategoryRecord => ({
 const mapProductCost = (row: any): ProductCostRecord => ({
   id: row.id,
   cogs_per_unit: Number(row.cogs_per_unit ?? 0)
+});
+
+const mapProductImage = (row: any): ProductImageRecord => ({
+  id: row.id,
+  product_id: row.product_id,
+  storage_path: row.storage_path,
+  image_url: row.image_url,
+  alt_text: row.alt_text ?? null,
+  sort_order: Number(row.sort_order ?? 0),
+  is_primary: Boolean(row.is_primary),
+  created_at: row.created_at
 });
 
 const mapOrderSettings = (row: any): OrderSettingsRecord => ({
@@ -201,7 +233,8 @@ export const catalogRepository = {
         id, sku, name, description, image_url, base_price, pricing_group_id, variations, active,
         avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
-        pricing_groups(slug, name)
+        pricing_groups(slug, name),
+        product_images(id, image_url, is_primary, sort_order)
       `
       )
       .order("created_at", { ascending: false });
@@ -230,7 +263,8 @@ export const catalogRepository = {
         id, sku, name, description, image_url, base_price, pricing_group_id, variations, active,
         avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
-        pricing_groups(slug, name)
+        pricing_groups(slug, name),
+        product_images(id, image_url, is_primary, sort_order)
       `
       )
       .in("id", productIds)
@@ -239,6 +273,25 @@ export const catalogRepository = {
       throw error;
     }
     return (data ?? []).map(mapProduct);
+  },
+
+  async getProductById(productId: string): Promise<Product | null> {
+    const { data, error } = await supabase
+      .from("products")
+      .select(
+        `
+        id, sku, name, description, image_url, base_price, pricing_group_id, variations, active,
+        avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
+        product_categories!inner(slug, name),
+        pricing_groups(slug, name),
+        product_images(id, image_url, is_primary, sort_order)
+      `
+      )
+      .eq("id", productId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+    return mapProduct(data);
   },
 
   async getProductCostsByIds(productIds: string[]): Promise<ProductCostRecord[]> {
@@ -308,7 +361,8 @@ export const catalogRepository = {
         id, sku, name, description, image_url, base_price, pricing_group_id, variations, active,
         avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
-        pricing_groups(slug, name)
+        pricing_groups(slug, name),
+        product_images(id, image_url, is_primary, sort_order)
       `
       )
       .single();
@@ -361,7 +415,8 @@ export const catalogRepository = {
         id, sku, name, description, image_url, base_price, pricing_group_id, variations, active,
         avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
-        pricing_groups(slug, name)
+        pricing_groups(slug, name),
+        product_images(id, image_url, is_primary, sort_order)
       `
       )
       .single();
@@ -544,6 +599,85 @@ export const orderSettingsRepository = {
       .single();
     if (error) throw error;
     return mapOrderSettings(data);
+  }
+};
+
+export const productImageRepository = {
+  async listByProductId(productId: string): Promise<ProductImageRecord[]> {
+    const { data, error } = await supabase
+      .from("product_images")
+      .select("id, product_id, storage_path, image_url, alt_text, sort_order, is_primary, created_at")
+      .eq("product_id", productId)
+      .order("sort_order", { ascending: true })
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+    return (data ?? []).map(mapProductImage);
+  },
+
+  async create(input: {
+    product_id: string;
+    storage_path: string;
+    image_url: string;
+    sort_order: number;
+    is_primary: boolean;
+    alt_text?: string | null;
+  }): Promise<ProductImageRecord> {
+    const { data, error } = await supabase
+      .from("product_images")
+      .insert({
+        product_id: input.product_id,
+        storage_path: input.storage_path,
+        image_url: input.image_url,
+        sort_order: input.sort_order,
+        is_primary: input.is_primary,
+        alt_text: input.alt_text ?? null
+      })
+      .select("id, product_id, storage_path, image_url, alt_text, sort_order, is_primary, created_at")
+      .single();
+    if (error) throw error;
+    return mapProductImage(data);
+  },
+
+  async getById(productId: string, imageId: string): Promise<ProductImageRecord | null> {
+    const { data, error } = await supabase
+      .from("product_images")
+      .select("id, product_id, storage_path, image_url, alt_text, sort_order, is_primary, created_at")
+      .eq("product_id", productId)
+      .eq("id", imageId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+    return mapProductImage(data);
+  },
+
+  async setPrimary(productId: string, imageId: string): Promise<void> {
+    const { error: resetError } = await supabase
+      .from("product_images")
+      .update({ is_primary: false })
+      .eq("product_id", productId)
+      .eq("is_primary", true);
+    if (resetError) throw resetError;
+
+    const { error } = await supabase
+      .from("product_images")
+      .update({ is_primary: true })
+      .eq("product_id", productId)
+      .eq("id", imageId);
+    if (error) throw error;
+  },
+
+  async delete(productId: string, imageId: string): Promise<void> {
+    const { error } = await supabase
+      .from("product_images")
+      .delete()
+      .eq("product_id", productId)
+      .eq("id", imageId);
+    if (error) throw error;
+  },
+
+  async setProductPrimaryImage(productId: string, imageUrl: string | null): Promise<void> {
+    const { error } = await supabase.from("products").update({ image_url: imageUrl }).eq("id", productId);
+    if (error) throw error;
   }
 };
 

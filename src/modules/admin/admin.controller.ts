@@ -1,4 +1,6 @@
 import { Router } from "express";
+import multer from "multer";
+import { randomUUID } from "node:crypto";
 import {
   clearLoginFailures,
   enforceLoginRateLimit,
@@ -11,6 +13,7 @@ import {
   catalogRepository,
   orderRepository,
   orderSettingsRepository,
+  productImageRepository,
   pricingRepository,
   promoRepository
 } from "../data/repositories.js";
@@ -28,8 +31,21 @@ import {
   PromoUpdateSchema
 } from "../pricing/pricing.validators.js";
 import { orderStatusService } from "../orders/order-status.service.js";
+import { supabase } from "../../lib/supabase.js";
 
 export const adminRouter = Router();
+const PRODUCT_IMAGE_BUCKET = "product-images";
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: 12 },
+  fileFilter: (_req, file, cb) => {
+    if (!file.mimetype.startsWith("image/")) {
+      cb(new Error("Only image files are allowed."));
+      return;
+    }
+    cb(null, true);
+  }
+});
 
 adminRouter.post("/admin/login", async (req, res, next) => {
   try {
@@ -144,6 +160,135 @@ adminRouter.patch("/admin/products/:productId", async (req, res, next) => {
 adminRouter.delete("/admin/products/:productId", async (req, res, next) => {
   try {
     await catalogRepository.deleteProduct(req.params.productId);
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.get("/admin/products/:productId/images", async (req, res, next) => {
+  try {
+    const productId = String(req.params.productId);
+    const images = await productImageRepository.listByProductId(productId);
+    res.json({ images });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.post(
+  "/admin/products/:productId/images",
+  upload.array("images", 12),
+  async (req, res, next) => {
+    try {
+      const productId = String(req.params.productId);
+      const product = await catalogRepository.getProductById(productId);
+      if (!product) {
+        res.status(404).json({ error: "Product not found." });
+        return;
+      }
+
+      const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+      if (files.length === 0) {
+        res.status(400).json({ error: "Please upload at least one image." });
+        return;
+      }
+
+      const existing = await productImageRepository.listByProductId(productId);
+      let nextSortOrder =
+        existing.length > 0 ? Math.max(...existing.map((image) => image.sort_order)) + 1 : 0;
+      const created = [];
+      let selectedPrimaryUrl: string | null = null;
+
+      for (const [index, file] of files.entries()) {
+        const ext = file.mimetype.split("/")[1] ?? "jpg";
+        const imageId = randomUUID();
+        const storagePath = `products/${productId}/${imageId}.${ext}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from(PRODUCT_IMAGE_BUCKET)
+          .upload(storagePath, file.buffer, {
+            contentType: file.mimetype,
+            upsert: false
+          });
+        if (uploadError) throw uploadError;
+
+        const {
+          data: { publicUrl }
+        } = supabase.storage.from(PRODUCT_IMAGE_BUCKET).getPublicUrl(storagePath);
+        const isPrimary = existing.length === 0 && index === 0;
+        const image = await productImageRepository.create({
+          product_id: productId,
+          storage_path: storagePath,
+          image_url: publicUrl,
+          sort_order: nextSortOrder,
+          is_primary: isPrimary
+        });
+        if (isPrimary) {
+          selectedPrimaryUrl = image.image_url;
+        }
+        nextSortOrder += 1;
+        created.push(image);
+      }
+
+      if (selectedPrimaryUrl) {
+        await productImageRepository.setProductPrimaryImage(productId, selectedPrimaryUrl);
+      }
+
+      res.status(201).json({ images: created });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+adminRouter.patch("/admin/products/:productId/images/:imageId/primary", async (req, res, next) => {
+  try {
+    const productId = String(req.params.productId);
+    const imageId = String(req.params.imageId);
+    const image = await productImageRepository.getById(productId, imageId);
+    if (!image) {
+      res.status(404).json({ error: "Image not found." });
+      return;
+    }
+
+    await productImageRepository.setPrimary(productId, imageId);
+    await productImageRepository.setProductPrimaryImage(productId, image.image_url);
+    const images = await productImageRepository.listByProductId(productId);
+    res.json({ images });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.delete("/admin/products/:productId/images/:imageId", async (req, res, next) => {
+  try {
+    const productId = String(req.params.productId);
+    const imageId = String(req.params.imageId);
+    const image = await productImageRepository.getById(productId, imageId);
+    if (!image) {
+      res.status(404).json({ error: "Image not found." });
+      return;
+    }
+
+    const { error: storageError } = await supabase.storage
+      .from(PRODUCT_IMAGE_BUCKET)
+      .remove([image.storage_path]);
+    if (storageError) throw storageError;
+
+    await productImageRepository.delete(productId, imageId);
+    const remaining = await productImageRepository.listByProductId(productId);
+    if (remaining.length === 0) {
+      await productImageRepository.setProductPrimaryImage(productId, null);
+      res.status(204).send();
+      return;
+    }
+
+    const primary = remaining.find((item) => item.is_primary) ?? remaining[0];
+    if (!primary.is_primary) {
+      await productImageRepository.setPrimary(productId, primary.id);
+    }
+    await productImageRepository.setProductPrimaryImage(productId, primary.image_url);
     res.status(204).send();
   } catch (error) {
     next(error);

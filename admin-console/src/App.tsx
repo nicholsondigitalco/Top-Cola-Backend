@@ -8,6 +8,7 @@ import type {
   PricingRule,
   PricingTier,
   Product,
+  ProductImage,
   ProductVariation,
   ProductCategory,
   PromoCode
@@ -37,6 +38,25 @@ const STATUS_LABELS: Record<OrderRecord["status"], string> = {
 };
 type AddModalKind = "product" | "promo" | "rule" | "category" | null;
 type OrderDateFilter = "today" | "yesterday" | "last7" | "all";
+interface ProductDraft {
+  sku: string;
+  name: string;
+  description: string;
+  basePrice: string;
+  categorySlug: string;
+  pricingGroupSlug: string;
+  active: boolean;
+}
+
+const EMPTY_PRODUCT_DRAFT: ProductDraft = {
+  sku: "",
+  name: "",
+  description: "",
+  basePrice: "0",
+  categorySlug: "vapes",
+  pricingGroupSlug: "",
+  active: true
+};
 
 const normalizeVariationId = (value: string): string =>
   value
@@ -46,11 +66,7 @@ const normalizeVariationId = (value: string): string =>
     .replace(/^_+|_+$/g, "")
     .slice(0, 80);
 
-const parseVariationInput = (value: string): ProductVariation[] => {
-  const entries = value
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
+const normalizeVariationList = (entries: string[]): ProductVariation[] => {
   const seen = new Set<string>();
   const variations: ProductVariation[] = [];
   for (const entry of entries) {
@@ -61,9 +77,6 @@ const parseVariationInput = (value: string): ProductVariation[] => {
   }
   return variations;
 };
-
-const serializeVariations = (variations?: ProductVariation[]): string =>
-  (variations ?? []).map((variation) => variation.name).join(", ");
 
 const formatScheduledTime = (value?: string | null): string => {
   if (!value) return "ASAP";
@@ -132,17 +145,13 @@ export function App() {
   const [updatingOrderIds, setUpdatingOrderIds] = useState<string[]>([]);
   const [adminTab, setAdminTab] = useState<AdminTab>("products");
 
-  const [newProduct, setNewProduct] = useState({
-    sku: "",
-    name: "",
-    description: "",
-    imageUrl: "",
-    basePrice: "0",
-    categorySlug: "vapes",
-    pricingGroupSlug: "",
-    variationsText: "",
-    active: true
-  });
+  const [productDraft, setProductDraft] = useState<ProductDraft>(EMPTY_PRODUCT_DRAFT);
+  const [productVariationsDraft, setProductVariationsDraft] = useState<ProductVariation[]>([]);
+  const [variationInputValue, setVariationInputValue] = useState("");
+  const [editingProductId, setEditingProductId] = useState<string | null>(null);
+  const [productImages, setProductImages] = useState<ProductImage[]>([]);
+  const [isUploadingImages, setIsUploadingImages] = useState(false);
+  const [isDragOverImageZone, setIsDragOverImageZone] = useState(false);
 
   const [newPromo, setNewPromo] = useState({
     code: "",
@@ -163,7 +172,6 @@ export function App() {
     firstTierValue: "0"
   });
   const [categoryDrafts, setCategoryDrafts] = useState<Record<string, string>>({});
-  const [productVariationDrafts, setProductVariationDrafts] = useState<Record<string, string>>({});
   const [activeAddModal, setActiveAddModal] = useState<AddModalKind>(null);
 
   const client = useMemo(() => new ApiClient(apiBaseUrl, token), [apiBaseUrl, token]);
@@ -225,16 +233,6 @@ export function App() {
     }
   }, [token, adminTab]);
 
-  useEffect(() => {
-    setProductVariationDrafts((current) => {
-      const next: Record<string, string> = {};
-      for (const product of products) {
-        next[product.id] = current[product.id] ?? serializeVariations(product.variations);
-      }
-      return next;
-    });
-  }, [products]);
-
   const login = async (event: FormEvent) => {
     event.preventDefault();
     setError(null);
@@ -271,31 +269,86 @@ export function App() {
     setStatus("Logged out");
   };
 
-  const createProduct = async (event: FormEvent) => {
-    event.preventDefault();
+  const openCreateProductModal = () => {
+    setEditingProductId(null);
+    setProductDraft(EMPTY_PRODUCT_DRAFT);
+    setProductVariationsDraft([]);
+    setProductImages([]);
+    setVariationInputValue("");
+    setActiveAddModal("product");
+  };
+
+  const loadProductImages = async (productId: string) => {
+    const result = await client.request<{ images: ProductImage[] }>(`/admin/products/${productId}/images`);
+    const sorted = [...result.images].sort((a, b) => {
+      if (a.is_primary === b.is_primary) return a.sort_order - b.sort_order;
+      return a.is_primary ? -1 : 1;
+    });
+    setProductImages(sorted);
+  };
+
+  const openEditProductModal = async (product: Product) => {
+    setEditingProductId(product.id);
+    setProductDraft({
+      sku: product.sku ?? "",
+      name: product.name,
+      description: product.description ?? "",
+      basePrice: Number(product.base_price).toString(),
+      categorySlug: product.category_slug,
+      pricingGroupSlug: product.pricing_group_slug ?? "",
+      active: product.active
+    });
+    setProductVariationsDraft(normalizeVariationList((product.variations ?? []).map((variation) => variation.name)));
+    await loadProductImages(product.id);
+    setVariationInputValue("");
+    setActiveAddModal("product");
+  };
+
+  const addVariationTag = () => {
+    const nextName = variationInputValue.trim();
+    if (!nextName) return;
+    setProductVariationsDraft((current) => normalizeVariationList([...current.map((variation) => variation.name), nextName]));
+    setVariationInputValue("");
+  };
+
+  const removeVariationTag = (variationId: string) => {
+    setProductVariationsDraft((current) => current.filter((variation) => variation.id !== variationId));
+  };
+
+  const uploadProductImages = async (files: File[]) => {
+    if (!editingProductId || files.length === 0) return;
+    setIsUploadingImages(true);
+    setError(null);
+    try {
+      const formData = new FormData();
+      for (const file of files) {
+        formData.append("images", file);
+      }
+      await client.requestFormData<{ images: ProductImage[] }>(
+        `/admin/products/${editingProductId}/images`,
+        "POST",
+        formData
+      );
+      await loadProductImages(editingProductId);
+      await loadAll();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsUploadingImages(false);
+      setIsDragOverImageZone(false);
+    }
+  };
+
+  const markImageAsPrimary = async (imageId: string) => {
+    if (!editingProductId) return;
     setIsBusy(true);
     setError(null);
     try {
-      await client.request<{ product: Product }>("/admin/products", "POST", {
-        sku: newProduct.sku || undefined,
-        name: newProduct.name,
-        description: newProduct.description,
-        imageUrl: newProduct.imageUrl || undefined,
-        basePrice: Number(newProduct.basePrice),
-        categorySlug: newProduct.categorySlug,
-        pricingGroupSlug: newProduct.pricingGroupSlug || null,
-        variations: parseVariationInput(newProduct.variationsText),
-        active: newProduct.active
-      });
-      setNewProduct((prev) => ({
-        ...prev,
-        sku: "",
-        name: "",
-        description: "",
-        imageUrl: "",
-        variationsText: ""
-      }));
-      setActiveAddModal(null);
+      await client.request<{ images: ProductImage[] }>(
+        `/admin/products/${editingProductId}/images/${imageId}/primary`,
+        "PATCH"
+      );
+      await loadProductImages(editingProductId);
       await loadAll();
     } catch (err) {
       setError((err as Error).message);
@@ -304,13 +357,49 @@ export function App() {
     }
   };
 
-  const saveProductVariations = async (productId: string) => {
+  const deleteProductImage = async (imageId: string) => {
+    if (!editingProductId) return;
     setIsBusy(true);
     setError(null);
     try {
-      await client.request<{ product: Product }>(`/admin/products/${productId}`, "PATCH", {
-        variations: parseVariationInput(productVariationDrafts[productId] ?? "")
-      });
+      await client.request(`/admin/products/${editingProductId}/images/${imageId}`, "DELETE");
+      await loadProductImages(editingProductId);
+      await loadAll();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const saveProduct = async (event: FormEvent) => {
+    event.preventDefault();
+    setIsBusy(true);
+    setError(null);
+    try {
+      const payload = {
+        sku: productDraft.sku || undefined,
+        name: productDraft.name,
+        description: productDraft.description,
+        basePrice: Number(productDraft.basePrice),
+        categorySlug: productDraft.categorySlug,
+        pricingGroupSlug: productDraft.pricingGroupSlug || null,
+        variations: productVariationsDraft,
+        active: productDraft.active
+      };
+
+      if (editingProductId) {
+        await client.request<{ product: Product }>(`/admin/products/${editingProductId}`, "PATCH", payload);
+      } else {
+        await client.request<{ product: Product }>("/admin/products", "POST", payload);
+      }
+
+      setEditingProductId(null);
+      setProductDraft(EMPTY_PRODUCT_DRAFT);
+      setProductVariationsDraft([]);
+      setProductImages([]);
+      setVariationInputValue("");
+      setActiveAddModal(null);
       await loadAll();
     } catch (err) {
       setError((err as Error).message);
@@ -588,10 +677,10 @@ export function App() {
 
   useEffect(() => {
     if (categories.length === 0) return;
-    if (!categories.some((category) => category.slug === newProduct.categorySlug)) {
-      setNewProduct((prev) => ({ ...prev, categorySlug: categories[0].slug }));
+    if (!categories.some((category) => category.slug === productDraft.categorySlug)) {
+      setProductDraft((prev) => ({ ...prev, categorySlug: categories[0].slug }));
     }
-  }, [categories, newProduct.categorySlug]);
+  }, [categories, productDraft.categorySlug]);
 
   if (!token) {
     return (
@@ -713,19 +802,20 @@ export function App() {
                         value={productSearch}
                         onChange={(event) => setProductSearch(event.target.value)}
                       />
-                      <button type="button" onClick={() => setActiveAddModal("product")}>
+                      <button type="button" onClick={openCreateProductModal}>
                         Add Product
                       </button>
                     </div>
                   </div>
-                  <table className="data-table">
+                  <table className="data-table product-table">
                     <thead>
                       <tr>
+                        <th className="column-edit" aria-label="Edit product" />
                         <th>Image</th>
                         <th>Product</th>
                         <th>Category</th>
                         <th>Pricing Group</th>
-                        <th>Variations</th>
+                        <th className="column-variations">Variations</th>
                         <th>Avg Qty</th>
                         <th>Avg Discount / Unit</th>
                         <th>Avg Profit / Unit</th>
@@ -736,6 +826,18 @@ export function App() {
                     <tbody>
                       {productRows.map((p) => (
                         <tr key={p.id}>
+                          <td className="column-edit">
+                            <button
+                              type="button"
+                              className="icon-edit-btn"
+                              aria-label={`Edit ${p.name}`}
+                              onClick={() => void openEditProductModal(p)}
+                            >
+                              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M4 20h4l10-10-4-4L4 16v4zm12.7-13.3 1.6-1.6a1 1 0 0 1 1.4 0l1.3 1.3a1 1 0 0 1 0 1.4L19.4 9l-2.7-2.3z" />
+                              </svg>
+                            </button>
+                          </td>
                           <td>
                             {p.image_url ? (
                               <img className="product-thumb" src={p.image_url} alt={p.name} />
@@ -755,7 +857,7 @@ export function App() {
                             {p.pricing_group_name ?? p.pricing_group_slug ?? "No volume discount"}
                             <div className="muted">{p.pricing_group_slug ?? "none"}</div>
                           </td>
-                          <td>
+                          <td className="column-variations">
                             <div className="product-variation-tags">
                               {(p.variations ?? []).length > 0 ? (
                                 (p.variations ?? []).map((variation) => (
@@ -766,27 +868,6 @@ export function App() {
                               ) : (
                                 <span className="product-variation-pill-empty">No variations</span>
                               )}
-                            </div>
-                            <input
-                              className="variation-input"
-                              placeholder="Comma-separated variations"
-                              value={productVariationDrafts[p.id] ?? ""}
-                              onChange={(event) =>
-                                setProductVariationDrafts((current) => ({
-                                  ...current,
-                                  [p.id]: event.target.value
-                                }))
-                              }
-                            />
-                            <div className="actions">
-                              <button
-                                type="button"
-                                className="small-action-btn"
-                                disabled={isBusy}
-                                onClick={() => void saveProductVariations(p.id)}
-                              >
-                                Save Variations
-                              </button>
                             </div>
                           </td>
                           <td>{Number(p.avg_order_quantity ?? 0).toFixed(2)}</td>
@@ -1100,24 +1181,28 @@ export function App() {
 
         <Modal
           open={activeAddModal === "product"}
-          title="Add Product"
-          onClose={() => setActiveAddModal(null)}
+          title={editingProductId ? "Edit Product" : "Add Product"}
+          onClose={() => {
+            setEditingProductId(null);
+            setVariationInputValue("");
+            setProductImages([]);
+            setProductVariationsDraft([]);
+            setProductDraft(EMPTY_PRODUCT_DRAFT);
+            setActiveAddModal(null);
+          }}
         >
-          <form onSubmit={createProduct}>
+          <form onSubmit={saveProduct}>
             <Field label="SKU (optional)">
-              <input value={newProduct.sku} onChange={(e) => setNewProduct((p) => ({ ...p, sku: e.target.value }))} />
+              <input value={productDraft.sku} onChange={(e) => setProductDraft((p) => ({ ...p, sku: e.target.value }))} />
             </Field>
             <Field label="Product name">
-              <input required value={newProduct.name} onChange={(e) => setNewProduct((p) => ({ ...p, name: e.target.value }))} />
+              <input required value={productDraft.name} onChange={(e) => setProductDraft((p) => ({ ...p, name: e.target.value }))} />
             </Field>
             <Field label="Base price">
-              <input type="number" step="0.01" value={newProduct.basePrice} onChange={(e) => setNewProduct((p) => ({ ...p, basePrice: e.target.value }))} />
-            </Field>
-            <Field label="Image URL">
-              <input value={newProduct.imageUrl} onChange={(e) => setNewProduct((p) => ({ ...p, imageUrl: e.target.value }))} />
+              <input type="number" step="0.01" value={productDraft.basePrice} onChange={(e) => setProductDraft((p) => ({ ...p, basePrice: e.target.value }))} />
             </Field>
             <Field label="Category">
-              <select value={newProduct.categorySlug} onChange={(e) => setNewProduct((p) => ({ ...p, categorySlug: e.target.value }))}>
+              <select value={productDraft.categorySlug} onChange={(e) => setProductDraft((p) => ({ ...p, categorySlug: e.target.value }))}>
                 {categories.map((category) => (
                   <option key={category.id} value={category.slug}>
                     {category.name} ({category.slug})
@@ -1127,8 +1212,8 @@ export function App() {
             </Field>
             <Field label="Pricing group">
               <select
-                value={newProduct.pricingGroupSlug}
-                onChange={(e) => setNewProduct((p) => ({ ...p, pricingGroupSlug: e.target.value }))}
+                value={productDraft.pricingGroupSlug}
+                onChange={(e) => setProductDraft((p) => ({ ...p, pricingGroupSlug: e.target.value }))}
               >
                 <option value="">No volume discount</option>
                 {productGroups.map((groupId) => (
@@ -1139,17 +1224,138 @@ export function App() {
               </select>
             </Field>
             <Field label="Description">
-              <textarea value={newProduct.description} onChange={(e) => setNewProduct((p) => ({ ...p, description: e.target.value }))} />
+              <textarea value={productDraft.description} onChange={(e) => setProductDraft((p) => ({ ...p, description: e.target.value }))} />
             </Field>
             <Field label="Variations (optional)">
-              <input
-                placeholder="e.g. Sativa, Hybrid, Indica"
-                value={newProduct.variationsText}
-                onChange={(e) => setNewProduct((p) => ({ ...p, variationsText: e.target.value }))}
-              />
+              <div className="variation-editor">
+                <div className="variation-tags">
+                  {productVariationsDraft.length > 0 ? (
+                    productVariationsDraft.map((variation) => (
+                      <span key={variation.id} className="variation-tag">
+                        {variation.name}
+                        <button
+                          type="button"
+                          className="variation-tag-remove"
+                          onClick={() => removeVariationTag(variation.id)}
+                          aria-label={`Remove ${variation.name}`}
+                        >
+                          x
+                        </button>
+                      </span>
+                    ))
+                  ) : (
+                    <span className="variation-tag-empty">No variations added yet</span>
+                  )}
+                </div>
+                <div className="variation-entry-row">
+                  <input
+                    placeholder="Type variation name"
+                    value={variationInputValue}
+                    onChange={(e) => setVariationInputValue(e.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        addVariationTag();
+                      }
+                    }}
+                  />
+                  <button type="button" className="small-action-btn" onClick={addVariationTag}>
+                    Add
+                  </button>
+                </div>
+              </div>
+            </Field>
+            <Field label="Product Images">
+              {editingProductId ? (
+                <div className="image-manager">
+                  <div
+                    className={`image-dropzone ${isDragOverImageZone ? "drag-over" : ""}`}
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                      setIsDragOverImageZone(true);
+                    }}
+                    onDragLeave={(event) => {
+                      event.preventDefault();
+                      setIsDragOverImageZone(false);
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      const files = Array.from(event.dataTransfer.files).filter((file) =>
+                        file.type.startsWith("image/")
+                      );
+                      void uploadProductImages(files);
+                    }}
+                  >
+                    <p>Drag and drop images here</p>
+                    <label className="dropzone-button">
+                      <input
+                        type="file"
+                        multiple
+                        accept="image/*"
+                        onChange={(event) => {
+                          const files = Array.from(event.target.files ?? []);
+                          void uploadProductImages(files);
+                          event.currentTarget.value = "";
+                        }}
+                      />
+                      {isUploadingImages ? "Uploading..." : "Upload Images"}
+                    </label>
+                  </div>
+
+                  <div className="image-section">
+                    <h4>Primary Image</h4>
+                    {productImages.find((image) => image.is_primary) ? (
+                      <img
+                        className="primary-image-preview"
+                        src={productImages.find((image) => image.is_primary)?.image_url}
+                        alt="Primary product"
+                      />
+                    ) : (
+                      <p className="muted">No primary image selected yet.</p>
+                    )}
+                  </div>
+
+                  <div className="image-section">
+                    <h4>Gallery Images</h4>
+                    {productImages.length === 0 ? (
+                      <p className="muted">No gallery images yet.</p>
+                    ) : (
+                      <div className="gallery-grid">
+                        {productImages.map((image) => (
+                          <div key={image.id} className="gallery-item">
+                            <img src={image.image_url} alt="Product gallery" />
+                            <div className="gallery-item-actions">
+                              <button
+                                type="button"
+                                className="small-action-btn secondary"
+                                disabled={isBusy || image.is_primary}
+                                onClick={() => void markImageAsPrimary(image.id)}
+                              >
+                                {image.is_primary ? "Primary" : "Set Primary"}
+                              </button>
+                              <button
+                                type="button"
+                                className="small-action-btn danger secondary"
+                                disabled={isBusy}
+                                onClick={() => void deleteProductImage(image.id)}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <p className="muted">Save the product first, then upload primary and gallery images.</p>
+              )}
             </Field>
             <div style={{ marginTop: 10 }} className="actions">
-              <button type="submit" disabled={isBusy}>Add Product</button>
+              <button type="submit" disabled={isBusy}>
+                {editingProductId ? "Save Product" : "Add Product"}
+              </button>
             </div>
           </form>
         </Modal>

@@ -10,6 +10,8 @@ export interface Product {
   pricing_group_slug: string | null;
   pricing_group_name: string | null;
   variations?: ProductVariation[];
+  gallery_images?: ProductImage[];
+  primary_image_url?: string | null;
   avg_order_quantity?: number;
   avg_discount_per_unit?: number;
   avg_profit_margin_per_unit?: number;
@@ -19,6 +21,17 @@ export interface Product {
 export interface ProductVariation {
   id: string;
   name: string;
+}
+
+export interface ProductImage {
+  id: string;
+  product_id: string;
+  storage_path: string;
+  image_url: string;
+  alt_text: string | null;
+  sort_order: number;
+  is_primary: boolean;
+  created_at: string;
 }
 
 export interface ProductCategory {

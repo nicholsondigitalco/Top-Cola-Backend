@@ -43,6 +43,8 @@ export interface Product {
   avg_discount_per_unit?: number;
   avg_profit_margin_per_unit?: number;
   variations?: ProductVariation[];
+  primary_image_url?: string | null;
+  gallery_images?: ProductImage[];
   active: boolean;
 }
 
@@ -55,6 +57,13 @@ export interface QuoteItemInput {
 export interface ProductVariation {
   id: string;
   name: string;
+}
+
+export interface ProductImage {
+  id: string;
+  image_url: string;
+  is_primary: boolean;
+  sort_order: number;
 }
 
 export interface PromoCode {
