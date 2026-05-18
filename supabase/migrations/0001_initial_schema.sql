@@ -94,6 +94,7 @@ create table if not exists orders (
   subtotal numeric(10,2) not null,
   volume_discount numeric(10,2) not null,
   promo_discount numeric(10,2) not null,
+  custom_discount numeric(10,2) not null default 0 check (custom_discount >= 0),
   total numeric(10,2) not null,
   savings numeric(10,2) not null,
   cogs_total numeric(10,2) not null default 0 check (cogs_total >= 0),
@@ -145,3 +146,17 @@ create table if not exists order_settings (
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now())
 );
+
+create table if not exists order_notification_emails (
+  id uuid primary key default gen_random_uuid(),
+  email text not null unique,
+  name text,
+  is_active boolean not null default true,
+  is_primary boolean not null default false,
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
+create unique index if not exists idx_order_notification_emails_primary_unique
+  on order_notification_emails(is_primary)
+  where is_primary = true;

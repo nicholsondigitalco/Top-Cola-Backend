@@ -13,6 +13,7 @@ export interface OrderInsertInput {
   subtotal: number;
   volume_discount: number;
   promo_discount: number;
+  custom_discount?: number;
   total: number;
   savings: number;
   cogs_total: number;
@@ -35,6 +36,12 @@ export interface OrderItemInsertInput {
   pricing_group_slug: string;
 }
 
+export interface OrderItemRecord extends OrderItemInsertInput {
+  id: string;
+  order_id: string;
+  created_at: string;
+}
+
 export interface OrderRecord {
   id: string;
   status: "pending" | "out_for_delivery" | "complete" | "cancelled";
@@ -49,6 +56,7 @@ export interface OrderRecord {
   subtotal: number;
   volume_discount: number;
   promo_discount: number;
+  custom_discount?: number;
   total: number;
   savings: number;
   promo_code: string | null;
@@ -78,6 +86,16 @@ export interface OrderSettingsRecord {
   min_delivery_buffer_minutes: number;
 }
 
+export interface NotificationEmailRecord {
+  id: string;
+  email: string;
+  name: string | null;
+  is_active: boolean;
+  is_primary: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 const mapProduct = (row: any): Product => ({
   id: row.id,
   sku: row.sku,
@@ -85,6 +103,7 @@ const mapProduct = (row: any): Product => ({
   description: row.description,
   image_url: row.image_url,
   base_price: Number(row.base_price),
+  cogs_per_unit: Number(row.cogs_per_unit ?? 0),
   category_slug: row.product_categories.slug,
   category_name: row.product_categories.name,
   pricing_group_id: row.pricing_group_id,
@@ -163,6 +182,16 @@ const mapOrderSettings = (row: any): OrderSettingsRecord => ({
   min_delivery_buffer_minutes: Number(row.min_delivery_buffer_minutes ?? 45)
 });
 
+const mapNotificationEmail = (row: any): NotificationEmailRecord => ({
+  id: row.id,
+  email: row.email,
+  name: row.name ?? null,
+  is_active: Boolean(row.is_active),
+  is_primary: Boolean(row.is_primary),
+  created_at: row.created_at,
+  updated_at: row.updated_at
+});
+
 const mapProductVariations = (value: unknown): ProductVariation[] => {
   if (!Array.isArray(value)) return [];
   return value
@@ -230,7 +259,7 @@ export const catalogRepository = {
       .from("products")
       .select(
         `
-        id, sku, name, description, image_url, base_price, pricing_group_id, variations, active,
+        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, active,
         avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
         pricing_groups(slug, name),
@@ -260,7 +289,7 @@ export const catalogRepository = {
       .from("products")
       .select(
         `
-        id, sku, name, description, image_url, base_price, pricing_group_id, variations, active,
+        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, active,
         avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
         pricing_groups(slug, name),
@@ -280,7 +309,7 @@ export const catalogRepository = {
       .from("products")
       .select(
         `
-        id, sku, name, description, image_url, base_price, pricing_group_id, variations, active,
+        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, active,
         avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
         pricing_groups(slug, name),
@@ -358,7 +387,7 @@ export const catalogRepository = {
       })
       .select(
         `
-        id, sku, name, description, image_url, base_price, pricing_group_id, variations, active,
+        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, active,
         avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
         pricing_groups(slug, name),
@@ -412,7 +441,7 @@ export const catalogRepository = {
       .eq("id", productId)
       .select(
         `
-        id, sku, name, description, image_url, base_price, pricing_group_id, variations, active,
+        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, active,
         avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
         pricing_groups(slug, name),
@@ -602,6 +631,69 @@ export const orderSettingsRepository = {
   }
 };
 
+export const notificationEmailRepository = {
+  async list(): Promise<NotificationEmailRecord[]> {
+    const { data, error } = await supabase
+      .from("order_notification_emails")
+      .select("id, email, name, is_active, is_primary, created_at, updated_at")
+      .order("is_primary", { ascending: false })
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+    return (data ?? []).map(mapNotificationEmail);
+  },
+
+  async create(input: {
+    email: string;
+    name?: string;
+    is_active: boolean;
+    is_primary: boolean;
+  }): Promise<NotificationEmailRecord> {
+    const { data, error } = await supabase
+      .from("order_notification_emails")
+      .insert({
+        email: input.email,
+        name: input.name ?? null,
+        is_active: input.is_active,
+        is_primary: input.is_primary
+      })
+      .select("id, email, name, is_active, is_primary, created_at, updated_at")
+      .single();
+    if (error) throw error;
+    return mapNotificationEmail(data);
+  },
+
+  async update(
+    id: string,
+    patch: { name?: string; is_active?: boolean; is_primary?: boolean }
+  ): Promise<NotificationEmailRecord> {
+    const nextPatch: Record<string, unknown> = {};
+    if (patch.name !== undefined) nextPatch.name = patch.name;
+    if (patch.is_active !== undefined) nextPatch.is_active = patch.is_active;
+    if (patch.is_primary !== undefined) nextPatch.is_primary = patch.is_primary;
+    const { data, error } = await supabase
+      .from("order_notification_emails")
+      .update(nextPatch)
+      .eq("id", id)
+      .select("id, email, name, is_active, is_primary, created_at, updated_at")
+      .single();
+    if (error) throw error;
+    return mapNotificationEmail(data);
+  },
+
+  async delete(id: string): Promise<void> {
+    const { error } = await supabase.from("order_notification_emails").delete().eq("id", id);
+    if (error) throw error;
+  },
+
+  async clearPrimary(): Promise<void> {
+    const { error } = await supabase
+      .from("order_notification_emails")
+      .update({ is_primary: false })
+      .eq("is_primary", true);
+    if (error) throw error;
+  }
+};
+
 export const productImageRepository = {
   async listByProductId(productId: string): Promise<ProductImageRecord[]> {
     const { data, error } = await supabase
@@ -730,7 +822,7 @@ export const orderRepository = {
 
   async getOrderDetail(orderId: string): Promise<{
     order: OrderRecord | null;
-    items: any[];
+    items: OrderItemRecord[];
     history: any[];
   }> {
     const [{ data: order, error: orderErr }, { data: items, error: itemsErr }, { data: history, error: histErr }] =
@@ -745,7 +837,55 @@ export const orderRepository = {
       ]);
     if (orderErr) return { order: null, items: [], history: [] };
     if (itemsErr || histErr) throw itemsErr ?? histErr;
-    return { order: order as OrderRecord, items: items ?? [], history: history ?? [] };
+    return { order: order as OrderRecord, items: (items ?? []) as OrderItemRecord[], history: history ?? [] };
+  },
+
+  async updateOrder(
+    orderId: string,
+    payload: {
+      order: Partial<OrderInsertInput>;
+      items: OrderItemInsertInput[];
+      note?: string;
+    }
+  ): Promise<{ order: OrderRecord; items: OrderItemRecord[] }> {
+    const { data: currentOrder, error: currentError } = await supabase
+      .from("orders")
+      .select("status")
+      .eq("id", orderId)
+      .single();
+    if (currentError || !currentOrder) {
+      throw new Error("Order not found.");
+    }
+
+    const { error: deleteItemsError } = await supabase.from("order_items").delete().eq("order_id", orderId);
+    if (deleteItemsError) throw deleteItemsError;
+
+    const itemsPayload = payload.items.map((item) => ({ order_id: orderId, ...item }));
+    const { data: insertedItems, error: insertItemsError } = await supabase
+      .from("order_items")
+      .insert(itemsPayload)
+      .select("*");
+    if (insertItemsError) throw insertItemsError;
+
+    const { data: updatedOrder, error: updateOrderError } = await supabase
+      .from("orders")
+      .update(payload.order)
+      .eq("id", orderId)
+      .select("*")
+      .single();
+    if (updateOrderError || !updatedOrder) throw updateOrderError ?? new Error("Unable to update order.");
+
+    const nextStatus = payload.order.status ?? currentOrder.status;
+    if (currentOrder.status !== nextStatus || payload.note) {
+      await supabase.from("order_status_history").insert({
+        order_id: orderId,
+        previous_status: currentOrder.status,
+        next_status: nextStatus,
+        note: payload.note ?? "Order edited manually."
+      });
+    }
+
+    return { order: updatedOrder as OrderRecord, items: (insertedItems ?? []) as OrderItemRecord[] };
   },
 
   async updateStatus(orderId: string, nextStatus: string, note?: string): Promise<OrderRecord> {

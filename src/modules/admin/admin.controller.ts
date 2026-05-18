@@ -11,6 +11,7 @@ import {
 } from "../../middleware/adminAuth.js";
 import {
   catalogRepository,
+  notificationEmailRepository,
   orderRepository,
   orderSettingsRepository,
   productImageRepository,
@@ -18,6 +19,9 @@ import {
   promoRepository
 } from "../data/repositories.js";
 import {
+  AdminNotificationEmailCreateSchema,
+  AdminNotificationEmailUpdateSchema,
+  AdminOrderEditSchema,
   AdminMinimumOrderSchema,
   AdminLoginSchema,
   AdminOrderStatusSchema,
@@ -32,6 +36,7 @@ import {
 } from "../pricing/pricing.validators.js";
 import { orderStatusService } from "../orders/order-status.service.js";
 import { supabase } from "../../lib/supabase.js";
+import { pricingEngine } from "../pricing/pricing.engine.js";
 
 export const adminRouter = Router();
 const PRODUCT_IMAGE_BUCKET = "product-images";
@@ -420,6 +425,89 @@ adminRouter.patch("/admin/orders/:orderId/status", async (req, res, next) => {
   }
 });
 
+adminRouter.patch("/admin/orders/:orderId", async (req, res, next) => {
+  try {
+    const payload = AdminOrderEditSchema.parse(req.body);
+    const roundCurrency = (value: number): number => Math.round((value + Number.EPSILON) * 100) / 100;
+    const quoteInputItems = payload.items.map((item) => ({
+      productId: item.productId,
+      quantity: item.quantity,
+      variationId: item.variationId
+    }));
+    const quote = await pricingEngine.quote({ items: quoteInputItems });
+
+    const productIds = [...new Set(quoteInputItems.map((item) => item.productId))];
+    const productCosts = await catalogRepository.getProductCostsByIds(productIds);
+    const costByProductId = new Map(productCosts.map((record) => [record.id, record.cogs_per_unit]));
+
+    const customDiscount = roundCurrency(payload.customDiscount);
+    const quoteTotal = roundCurrency(quote.total);
+    const appliedCustomDiscount = Math.min(customDiscount, quoteTotal);
+    const total = roundCurrency(quoteTotal - appliedCustomDiscount);
+    const cogsTotal = roundCurrency(
+      quoteInputItems.reduce(
+        (sum, item) => sum + (costByProductId.get(item.productId) ?? 0) * item.quantity,
+        0
+      )
+    );
+    const grossProfit = roundCurrency(total - cogsTotal);
+    const savings = roundCurrency(quote.savings + appliedCustomDiscount);
+
+    const items = quote.items.map((line) => ({
+      product_id: line.product_id,
+      product_name_snapshot: line.product_name,
+      quantity: line.quantity,
+      unit_base_price: line.unit_base_price,
+      line_subtotal: line.line_subtotal,
+      line_discount: line.line_discount,
+      line_total: line.line_total,
+      cogs_per_unit: roundCurrency(costByProductId.get(line.product_id) ?? 0),
+      line_cogs_total: roundCurrency((costByProductId.get(line.product_id) ?? 0) * line.quantity),
+      pricing_group_slug: line.pricing_group_slug
+    }));
+
+    const pricingSnapshot = {
+      subtotal: quote.subtotal,
+      volumeDiscount: quote.volumeDiscount,
+      promoDiscount: quote.promoDiscount,
+      customDiscount: appliedCustomDiscount,
+      savings,
+      total,
+      items: quote.items,
+      groups: quote.groups
+    };
+
+    const result = await orderRepository.updateOrder(String(req.params.orderId), {
+      order: {
+        customer_name: payload.customerName,
+        customer_phone: payload.customerPhone,
+        customer_email: payload.customerEmail ?? undefined,
+        delivery_address: payload.deliveryAddress,
+        delivery_instructions: payload.deliveryInstructions ?? undefined,
+        payment_method: payload.paymentMethod,
+        scheduled_delivery_time: payload.scheduledDeliveryTime ?? undefined,
+        status: payload.status,
+        subtotal: quote.subtotal,
+        volume_discount: quote.volumeDiscount,
+        promo_discount: quote.promoDiscount,
+        custom_discount: appliedCustomDiscount,
+        total,
+        savings,
+        cogs_total: cogsTotal,
+        gross_profit: grossProfit,
+        promo_code: undefined,
+        pricing_snapshot: pricingSnapshot
+      },
+      items,
+      note: payload.note
+    });
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
 adminRouter.get("/admin/metrics/orders", async (_req, res, next) => {
   try {
     const orders = await orderRepository.listOrders();
@@ -460,6 +548,59 @@ adminRouter.patch("/admin/settings/order-minimum", async (req, res, next) => {
       minOrderAmount: settings.min_order_amount,
       minDeliveryBufferMinutes: settings.min_delivery_buffer_minutes
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.get("/admin/settings/notification-emails", async (_req, res, next) => {
+  try {
+    const emails = await notificationEmailRepository.list();
+    res.json({ emails });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.post("/admin/settings/notification-emails", async (req, res, next) => {
+  try {
+    const payload = AdminNotificationEmailCreateSchema.parse(req.body);
+    if (payload.isPrimary) {
+      await notificationEmailRepository.clearPrimary();
+    }
+    const email = await notificationEmailRepository.create({
+      email: payload.email,
+      name: payload.name,
+      is_active: payload.isActive,
+      is_primary: payload.isPrimary
+    });
+    res.status(201).json({ email });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.patch("/admin/settings/notification-emails/:emailId", async (req, res, next) => {
+  try {
+    const payload = AdminNotificationEmailUpdateSchema.parse(req.body);
+    if (payload.isPrimary) {
+      await notificationEmailRepository.clearPrimary();
+    }
+    const email = await notificationEmailRepository.update(String(req.params.emailId), {
+      name: payload.name,
+      is_active: payload.isActive,
+      is_primary: payload.isPrimary
+    });
+    res.json({ email });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.delete("/admin/settings/notification-emails/:emailId", async (req, res, next) => {
+  try {
+    await notificationEmailRepository.delete(String(req.params.emailId));
+    res.status(204).send();
   } catch (error) {
     next(error);
   }

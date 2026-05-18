@@ -2,6 +2,8 @@ import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import { BrowserRouter, NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { ApiClient } from "./api";
 import type {
+  NotificationEmail,
+  OrderDetailItem,
   OrderMetrics,
   OrderRecord,
   OrderSettings,
@@ -46,6 +48,12 @@ interface ProductDraft {
   categorySlug: string;
   pricingGroupSlug: string;
   active: boolean;
+}
+
+interface OrderEditorItem {
+  productId: string;
+  quantity: string;
+  variationId?: string;
 }
 
 const EMPTY_PRODUCT_DRAFT: ProductDraft = {
@@ -115,6 +123,28 @@ const formatOrderPlacedTime = (value: string): string => {
   return `${day} at ${time}`;
 };
 
+const getCategoryTagStyle = (categorySlug?: string) => {
+  if (!categorySlug) {
+    return {
+      color: "#334155",
+      background: "#e2e8f0",
+      border: "1px solid #cbd5e1"
+    };
+  }
+
+  let hash = 0;
+  for (let i = 0; i < categorySlug.length; i += 1) {
+    hash = (hash << 5) - hash + categorySlug.charCodeAt(i);
+    hash |= 0;
+  }
+  const hue = Math.abs(hash) % 360;
+  return {
+    color: `hsl(${hue}, 45%, 24%)`,
+    background: `hsl(${hue}, 75%, 92%)`,
+    border: `1px solid hsl(${hue}, 60%, 82%)`
+  };
+};
+
 export function App() {
   const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? API_BASE_DEFAULT;
   const [password, setPassword] = useState("");
@@ -133,6 +163,8 @@ export function App() {
     minOrderAmount: 0,
     minDeliveryBufferMinutes: 45
   });
+  const [notificationEmails, setNotificationEmails] = useState<NotificationEmail[]>([]);
+  const [newNotificationEmail, setNewNotificationEmail] = useState({ email: "", name: "" });
   const [minOrderAmountInput, setMinOrderAmountInput] = useState("0");
   const [minDeliveryBufferInput, setMinDeliveryBufferInput] = useState("45");
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
@@ -152,6 +184,29 @@ export function App() {
   const [productImages, setProductImages] = useState<ProductImage[]>([]);
   const [isUploadingImages, setIsUploadingImages] = useState(false);
   const [isDragOverImageZone, setIsDragOverImageZone] = useState(false);
+  const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
+  const [isOrderEditorOpen, setIsOrderEditorOpen] = useState(false);
+  const [orderEditorLoading, setOrderEditorLoading] = useState(false);
+  const [orderEditor, setOrderEditor] = useState({
+    customerName: "",
+    customerPhone: "",
+    customerEmail: "",
+    deliveryAddress: "",
+    deliveryInstructions: "",
+    paymentMethod: "cash" as "cash" | "zelle",
+    scheduledDeliveryTime: "",
+    status: "pending" as OrderRecord["status"],
+    customDiscount: "0",
+    note: ""
+  });
+  const [orderEditorItems, setOrderEditorItems] = useState<OrderEditorItem[]>([]);
+  const [orderQuotePreview, setOrderQuotePreview] = useState<{
+    subtotal: number;
+    total: number;
+    savings: number;
+    volumeDiscount: number;
+    promoDiscount: number;
+  } | null>(null);
 
   const [newPromo, setNewPromo] = useState({
     code: "",
@@ -195,13 +250,14 @@ export function App() {
     setError(null);
     try {
       await loadCategories();
-      const [productsRes, promosRes, rulesRes, ordersRes, metricsRes, settingsRes] = await Promise.all([
+      const [productsRes, promosRes, rulesRes, ordersRes, metricsRes, settingsRes, notificationEmailsRes] = await Promise.all([
         client.request<{ products: Product[] }>("/admin/products"),
         client.request<{ promos: PromoCode[] }>("/admin/promos"),
         client.request<{ pricingRules: PricingRule[] }>("/admin/pricing-rules"),
         client.request<{ orders: OrderRecord[] }>("/admin/orders"),
         client.request<OrderMetrics>("/admin/metrics/orders"),
-        client.request<OrderSettings>("/admin/settings/order-minimum")
+        client.request<OrderSettings>("/admin/settings/order-minimum"),
+        client.request<{ emails: NotificationEmail[] }>("/admin/settings/notification-emails")
       ]);
       setProducts(productsRes.products);
       setPromos(promosRes.promos);
@@ -209,6 +265,7 @@ export function App() {
       setOrders(ordersRes.orders);
       setMetrics(metricsRes);
       setSettings(settingsRes);
+      setNotificationEmails(notificationEmailsRes.emails);
       setMinOrderAmountInput(settingsRes.minOrderAmount.toString());
       setMinDeliveryBufferInput(settingsRes.minDeliveryBufferMinutes.toString());
       setLastSyncedAt(new Date().toISOString());
@@ -263,6 +320,7 @@ export function App() {
       minOrderAmount: 0,
       minDeliveryBufferMinutes: 45
     });
+    setNotificationEmails([]);
     setMinOrderAmountInput("0");
     setMinDeliveryBufferInput("45");
     setLastSyncedAt(null);
@@ -557,6 +615,124 @@ export function App() {
     }
   };
 
+  const openOrderEditor = async (orderId: string) => {
+    setOrderEditorLoading(true);
+    setError(null);
+    try {
+      const detail = await client.request<{ order: OrderRecord; items: OrderDetailItem[] }>(`/admin/orders/${orderId}`);
+      const order = detail.order;
+      setEditingOrderId(order.id);
+      setOrderEditor({
+        customerName: order.customer_name ?? "",
+        customerPhone: order.customer_phone ?? "",
+        customerEmail: order.customer_email ?? "",
+        deliveryAddress: order.delivery_address ?? "",
+        deliveryInstructions: order.delivery_instructions ?? "",
+        paymentMethod: order.payment_method ?? "cash",
+        scheduledDeliveryTime: order.scheduled_delivery_time
+          ? new Date(order.scheduled_delivery_time).toISOString().slice(0, 16)
+          : "",
+        status: order.status,
+        customDiscount: Number(order.custom_discount ?? 0).toString(),
+        note: ""
+      });
+      setOrderEditorItems(
+        detail.items.map((item) => ({
+          productId: item.product_id,
+          quantity: String(Math.max(1, Math.round(Number(item.quantity))))
+        }))
+      );
+      setIsOrderEditorOpen(true);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setOrderEditorLoading(false);
+    }
+  };
+
+  const addOrderEditorItem = () => {
+    const defaultProduct = products[0];
+    if (!defaultProduct) return;
+    setOrderEditorItems((current) => [
+      ...current,
+      {
+        productId: defaultProduct.id,
+        quantity: "1"
+      }
+    ]);
+  };
+
+  const updateOrderEditorItem = (index: number, patch: Partial<OrderEditorItem>) => {
+    setOrderEditorItems((current) =>
+      current.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row))
+    );
+  };
+
+  const removeOrderEditorItem = (index: number) => {
+    setOrderEditorItems((current) => current.filter((_, rowIndex) => rowIndex !== index));
+  };
+
+  const closeOrderEditor = () => {
+    setIsOrderEditorOpen(false);
+    setEditingOrderId(null);
+    setOrderEditorItems([]);
+    setOrderQuotePreview(null);
+    setOrderEditor({
+      customerName: "",
+      customerPhone: "",
+      customerEmail: "",
+      deliveryAddress: "",
+      deliveryInstructions: "",
+      paymentMethod: "cash",
+      scheduledDeliveryTime: "",
+      status: "pending",
+      customDiscount: "0",
+      note: ""
+    });
+  };
+
+  const saveEditedOrder = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!editingOrderId) return;
+    setIsBusy(true);
+    setError(null);
+    try {
+      const payloadItems = orderEditorItems
+        .map((item) => ({
+          productId: item.productId,
+          quantity: Math.max(1, Math.floor(Number(item.quantity) || 0)),
+          variationId: item.variationId || undefined
+        }))
+        .filter((item) => item.productId && Number.isFinite(item.quantity) && item.quantity > 0);
+      if (payloadItems.length === 0) {
+        throw new Error("Add at least one valid order item.");
+      }
+
+      await client.request<{ order: OrderRecord }>(`/admin/orders/${editingOrderId}`, "PATCH", {
+        customerName: orderEditor.customerName,
+        customerPhone: orderEditor.customerPhone,
+        customerEmail: orderEditor.customerEmail || null,
+        deliveryAddress: orderEditor.deliveryAddress,
+        deliveryInstructions: orderEditor.deliveryInstructions || null,
+        paymentMethod: orderEditor.paymentMethod,
+        scheduledDeliveryTime: orderEditor.scheduledDeliveryTime
+          ? new Date(orderEditor.scheduledDeliveryTime).toISOString()
+          : null,
+        status: orderEditor.status,
+        customDiscount: Number(orderEditor.customDiscount) || 0,
+        note: orderEditor.note || undefined,
+        items: payloadItems
+      });
+
+      await loadAll();
+      closeOrderEditor();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   const saveMinimumOrder = async () => {
     setIsBusy(true);
     setError(null);
@@ -572,6 +748,73 @@ export function App() {
       setMinOrderAmountInput(updated.minOrderAmount.toString());
       setMinDeliveryBufferInput(updated.minDeliveryBufferMinutes.toString());
       setStatus("Order settings updated");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const addNotificationEmail = async (event: FormEvent) => {
+    event.preventDefault();
+    setIsBusy(true);
+    setError(null);
+    try {
+      await client.request<{ email: NotificationEmail }>("/admin/settings/notification-emails", "POST", {
+        email: newNotificationEmail.email,
+        name: newNotificationEmail.name || undefined,
+        isActive: true,
+        isPrimary: notificationEmails.length === 0
+      });
+      setNewNotificationEmail({ email: "", name: "" });
+      await loadAll();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const toggleNotificationEmailActive = async (entry: NotificationEmail) => {
+    setIsBusy(true);
+    setError(null);
+    try {
+      await client.request<{ email: NotificationEmail }>(
+        `/admin/settings/notification-emails/${entry.id}`,
+        "PATCH",
+        { isActive: !entry.is_active }
+      );
+      await loadAll();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const setPrimaryNotificationEmail = async (entry: NotificationEmail) => {
+    setIsBusy(true);
+    setError(null);
+    try {
+      await client.request<{ email: NotificationEmail }>(
+        `/admin/settings/notification-emails/${entry.id}`,
+        "PATCH",
+        { isPrimary: true, isActive: true }
+      );
+      await loadAll();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const deleteNotificationEmail = async (entryId: string) => {
+    setIsBusy(true);
+    setError(null);
+    try {
+      await client.request(`/admin/settings/notification-emails/${entryId}`, "DELETE");
+      await loadAll();
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -651,6 +894,72 @@ export function App() {
     rows: filteredOrderRows.filter((order) => order.status === status)
   }));
   const pendingOrderCount = orders.filter((order) => order.status === "pending").length;
+  const categoryByProductId = useMemo(
+    () => new Map(products.map((product) => [product.id, product.category_slug])),
+    [products]
+  );
+  const productById = useMemo(() => new Map(products.map((product) => [product.id, product])), [products]);
+  useEffect(() => {
+    if (!isOrderEditorOpen) return;
+    const normalizedItems = orderEditorItems
+      .map((item) => ({
+        productId: item.productId,
+        quantity: Math.max(1, Math.floor(Number(item.quantity) || 0)),
+        variationId: item.variationId
+      }))
+      .filter((item) => item.productId && Number.isFinite(item.quantity) && item.quantity > 0);
+    if (normalizedItems.length === 0) {
+      setOrderQuotePreview(null);
+      return;
+    }
+    let cancelled = false;
+    void client
+      .request<{
+        subtotal: number;
+        total: number;
+        savings: number;
+        volumeDiscount: number;
+        promoDiscount: number;
+      }>("/pricing/quote", "POST", { items: normalizedItems })
+      .then((quote) => {
+        if (!cancelled) setOrderQuotePreview(quote);
+      })
+      .catch(() => {
+        if (!cancelled) setOrderQuotePreview(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, isOrderEditorOpen, orderEditorItems]);
+  const orderEditorTotals = useMemo(() => {
+    const fallbackSubtotal = orderEditorItems.reduce((sum, item) => {
+      const quantity = Math.max(1, Math.floor(Number(item.quantity) || 0));
+      const basePrice = Number(productById.get(item.productId)?.base_price ?? 0);
+      if (!Number.isFinite(quantity) || !Number.isFinite(basePrice)) return sum;
+      return sum + quantity * basePrice;
+    }, 0);
+    const subtotal = Number(orderQuotePreview?.subtotal ?? fallbackSubtotal);
+    const quoteTotal = Number(orderQuotePreview?.total ?? fallbackSubtotal);
+    const cogsTotal = orderEditorItems.reduce((sum, item) => {
+      const quantity = Math.max(1, Math.floor(Number(item.quantity) || 0));
+      const cogs = Number(productById.get(item.productId)?.cogs_per_unit ?? 0);
+      if (!Number.isFinite(quantity) || !Number.isFinite(cogs)) return sum;
+      return sum + quantity * cogs;
+    }, 0);
+    const customDiscount = Math.max(0, Number(orderEditor.customDiscount) || 0);
+    const appliedDiscount = Math.min(customDiscount, quoteTotal);
+    const total = quoteTotal - appliedDiscount;
+    const grossProfit = total - cogsTotal;
+    return {
+      subtotal,
+      cogsTotal,
+      customDiscount: appliedDiscount,
+      total,
+      grossProfit,
+      quoteTotal,
+      hasRuleQuote: Boolean(orderQuotePreview)
+    };
+  }, [orderEditor.customDiscount, orderEditorItems, orderQuotePreview, productById]);
   const renderOrderItemsSummary = (order: OrderRecord): ReactNode => {
     const items = order.pricing_snapshot?.items ?? [];
     if (items.length === 0) {
@@ -659,11 +968,18 @@ export function App() {
 
     return (
       <div className="order-item-tags">
-        {items.map((item, index) => (
-          <span className="order-item-pill" key={`${order.id}-${item.product_name ?? "item"}-${index}`}>
+        {items.map((item, index) => {
+          const categorySlug = item.product_id ? categoryByProductId.get(item.product_id) : undefined;
+          return (
+          <span
+            className="order-item-pill"
+            style={getCategoryTagStyle(categorySlug)}
+            key={`${order.id}-${item.product_id ?? item.product_name ?? "item"}-${index}`}
+          >
             {item.product_name ?? "Item"} x{item.quantity ?? 1}
           </span>
-        ))}
+          );
+        })}
       </div>
     );
   };
@@ -998,39 +1314,132 @@ export function App() {
                 )}
 
                 {adminTab === "settings" && (
-                  <div className="card">
-                    <div className="section-header">
-                      <h3>Order Settings</h3>
+                  <div className="page-stack">
+                    <div className="card">
+                      <div className="section-header">
+                        <h3>Order Settings</h3>
+                      </div>
+                      <div className="row">
+                        <Field label="Minimum order amount ($)">
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={minOrderAmountInput}
+                            onChange={(event) => setMinOrderAmountInput(event.target.value)}
+                          />
+                        </Field>
+                        <Field label="Minimum delivery buffer (minutes)">
+                          <input
+                            type="number"
+                            step="1"
+                            min="0"
+                            value={minDeliveryBufferInput}
+                            onChange={(event) => setMinDeliveryBufferInput(event.target.value)}
+                          />
+                        </Field>
+                      </div>
+                      <div className="actions">
+                        <button type="button" onClick={() => void saveMinimumOrder()} disabled={isBusy}>
+                          Save Minimum Order
+                        </button>
+                      </div>
+                      <p className="status">
+                        Current minimum: ${settings.minOrderAmount.toFixed(2)} | Delivery buffer:{" "}
+                        {settings.minDeliveryBufferMinutes} min
+                      </p>
                     </div>
-                    <div className="row">
-                      <Field label="Minimum order amount ($)">
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          value={minOrderAmountInput}
-                          onChange={(event) => setMinOrderAmountInput(event.target.value)}
-                        />
-                      </Field>
-                      <Field label="Minimum delivery buffer (minutes)">
-                        <input
-                          type="number"
-                          step="1"
-                          min="0"
-                          value={minDeliveryBufferInput}
-                          onChange={(event) => setMinDeliveryBufferInput(event.target.value)}
-                        />
-                      </Field>
+
+                    <div className="card">
+                      <div className="section-header">
+                        <h3>Order Notification Emails</h3>
+                      </div>
+                      <form onSubmit={addNotificationEmail} className="row">
+                        <Field label="Email">
+                          <input
+                            type="email"
+                            required
+                            value={newNotificationEmail.email}
+                            onChange={(event) =>
+                              setNewNotificationEmail((current) => ({ ...current, email: event.target.value }))
+                            }
+                            placeholder="ops@example.com"
+                          />
+                        </Field>
+                        <Field label="Name (optional)">
+                          <input
+                            value={newNotificationEmail.name}
+                            onChange={(event) =>
+                              setNewNotificationEmail((current) => ({ ...current, name: event.target.value }))
+                            }
+                            placeholder="Operations"
+                          />
+                        </Field>
+                        <div className="actions" style={{ alignSelf: "end" }}>
+                          <button type="submit" disabled={isBusy}>
+                            Add Email
+                          </button>
+                        </div>
+                      </form>
+
+                      <table className="data-table compact">
+                        <thead>
+                          <tr>
+                            <th>Email</th>
+                            <th>Name</th>
+                            <th>Active</th>
+                            <th>Primary Sender</th>
+                            <th>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {notificationEmails.map((entry) => (
+                            <tr key={entry.id}>
+                              <td>{entry.email}</td>
+                              <td>{entry.name ?? "-"}</td>
+                              <td>
+                                <label className="toggle-inline">
+                                  <input
+                                    type="checkbox"
+                                    checked={entry.is_active}
+                                    onChange={() => void toggleNotificationEmailActive(entry)}
+                                  />
+                                  <span>{entry.is_active ? "On" : "Off"}</span>
+                                </label>
+                              </td>
+                              <td>
+                                <label className="toggle-inline">
+                                  <input
+                                    type="radio"
+                                    name="primary-notification-email"
+                                    checked={entry.is_primary}
+                                    onChange={() => void setPrimaryNotificationEmail(entry)}
+                                  />
+                                  <span>{entry.is_primary ? "Primary" : "Set Primary"}</span>
+                                </label>
+                              </td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className="danger secondary small-action-btn"
+                                  onClick={() => void deleteNotificationEmail(entry.id)}
+                                  disabled={isBusy}
+                                >
+                                  Remove
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                          {notificationEmails.length === 0 && (
+                            <tr>
+                              <td colSpan={5} className="muted">
+                                No notification emails configured yet.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
                     </div>
-                    <div className="actions">
-                      <button type="button" onClick={() => void saveMinimumOrder()} disabled={isBusy}>
-                        Save Minimum Order
-                      </button>
-                    </div>
-                    <p className="status">
-                      Current minimum: ${settings.minOrderAmount.toFixed(2)} | Delivery buffer:{" "}
-                      {settings.minDeliveryBufferMinutes} min
-                    </p>
                   </div>
                 )}
               </div>
@@ -1130,6 +1539,7 @@ export function App() {
                                 <tr
                                   key={order.id}
                                   className={updatingOrderIds.includes(order.id) ? "order-updating-row" : ""}
+                                  onClick={() => void openOrderEditor(order.id)}
                                 >
                                   <td>
                                     <strong>{order.customer_name}</strong>
@@ -1141,6 +1551,7 @@ export function App() {
                                     <select
                                       value={order.status}
                                       disabled={updatingOrderIds.includes(order.id)}
+                                      onClick={(event) => event.stopPropagation()}
                                       onChange={(e) =>
                                         void updateOrderStatus(order.id, e.target.value as OrderRecord["status"])
                                       }
@@ -1462,6 +1873,218 @@ export function App() {
             </div>
           </form>
         </Modal>
+
+        <Modal
+          open={isOrderEditorOpen}
+          title={editingOrderId ? `Edit Order ${editingOrderId}` : "Edit Order"}
+          size="fullscreen"
+          onClose={closeOrderEditor}
+        >
+          {orderEditorLoading ? (
+            <p className="status">Loading order details...</p>
+          ) : (
+            <form onSubmit={saveEditedOrder} className="order-editor-form">
+              <div className="order-editor-grid">
+                <Field label="Customer Name">
+                  <input
+                    value={orderEditor.customerName}
+                    onChange={(event) => setOrderEditor((current) => ({ ...current, customerName: event.target.value }))}
+                  />
+                </Field>
+                <Field label="Customer Phone">
+                  <input
+                    value={orderEditor.customerPhone}
+                    onChange={(event) => setOrderEditor((current) => ({ ...current, customerPhone: event.target.value }))}
+                  />
+                </Field>
+                <Field label="Customer Email">
+                  <input
+                    value={orderEditor.customerEmail}
+                    onChange={(event) => setOrderEditor((current) => ({ ...current, customerEmail: event.target.value }))}
+                  />
+                </Field>
+                <Field label="Payment Method">
+                  <select
+                    value={orderEditor.paymentMethod}
+                    onChange={(event) =>
+                      setOrderEditor((current) => ({
+                        ...current,
+                        paymentMethod: event.target.value as "cash" | "zelle"
+                      }))
+                    }
+                  >
+                    <option value="cash">Cash</option>
+                    <option value="zelle">Zelle</option>
+                  </select>
+                </Field>
+                <Field label="Scheduled Delivery">
+                  <input
+                    type="datetime-local"
+                    value={orderEditor.scheduledDeliveryTime}
+                    onChange={(event) =>
+                      setOrderEditor((current) => ({ ...current, scheduledDeliveryTime: event.target.value }))
+                    }
+                  />
+                </Field>
+                <Field label="Order Status">
+                  <select
+                    value={orderEditor.status}
+                    onChange={(event) =>
+                      setOrderEditor((current) => ({
+                        ...current,
+                        status: event.target.value as OrderRecord["status"]
+                      }))
+                    }
+                  >
+                    {STATUS_OPTIONS.map((statusOption) => (
+                      <option key={statusOption} value={statusOption}>
+                        {STATUS_LABELS[statusOption]}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Delivery Address">
+                  <input
+                    value={orderEditor.deliveryAddress}
+                    onChange={(event) =>
+                      setOrderEditor((current) => ({ ...current, deliveryAddress: event.target.value }))
+                    }
+                  />
+                </Field>
+                <Field label="Delivery Instructions">
+                  <input
+                    value={orderEditor.deliveryInstructions}
+                    onChange={(event) =>
+                      setOrderEditor((current) => ({ ...current, deliveryInstructions: event.target.value }))
+                    }
+                  />
+                </Field>
+                <Field label="Edit Note (optional)">
+                  <input
+                    value={orderEditor.note}
+                    onChange={(event) => setOrderEditor((current) => ({ ...current, note: event.target.value }))}
+                  />
+                </Field>
+              </div>
+
+              <div className="order-editor-items card">
+                <div className="section-header">
+                  <h4>Products</h4>
+                  <button type="button" className="small-action-btn" onClick={addOrderEditorItem}>
+                    Add Item
+                  </button>
+                </div>
+                <table className="data-table compact">
+                  <thead>
+                    <tr>
+                      <th>Product</th>
+                      <th>Quantity</th>
+                      <th>Rule Price</th>
+                      <th>Line Total</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orderEditorItems.map((item, index) => {
+                      const quantity = Number(item.quantity) || 0;
+                      const basePrice = Number(productById.get(item.productId)?.base_price ?? 0);
+                      const lineEstimate = basePrice * quantity;
+                      return (
+                        <tr key={`order-item-${index}`}>
+                          <td>
+                            <select
+                              value={item.productId}
+                              onChange={(event) => updateOrderEditorItem(index, { productId: event.target.value })}
+                            >
+                              {products.map((product) => (
+                                <option key={product.id} value={product.id}>
+                                  {product.name} ({product.id})
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              min="1"
+                              step="1"
+                              value={item.quantity}
+                              onChange={(event) => {
+                                const raw = event.target.value;
+                                if (raw === "") {
+                                  updateOrderEditorItem(index, { quantity: "" });
+                                  return;
+                                }
+                                const normalized = String(Math.max(1, Math.floor(Number(raw) || 1)));
+                                updateOrderEditorItem(index, { quantity: normalized });
+                              }}
+                            />
+                          </td>
+                          <td>${basePrice.toFixed(2)}</td>
+                          <td>${lineEstimate.toFixed(2)}</td>
+                          <td>
+                            <button
+                              type="button"
+                              className="small-action-btn danger secondary"
+                              onClick={() => removeOrderEditorItem(index)}
+                              disabled={orderEditorItems.length <= 1}
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="order-editor-discount card">
+                <h4>Custom Discount</h4>
+                <p className="muted">Apply a blanket discount after standard pricing rules.</p>
+                <Field label="Custom Discount ($)">
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={orderEditor.customDiscount}
+                    onChange={(event) =>
+                      setOrderEditor((current) => ({ ...current, customDiscount: event.target.value }))
+                    }
+                  />
+                </Field>
+              </div>
+
+              <div className="order-editor-summary card">
+                <h4>Totals</h4>
+                {!orderEditorTotals.hasRuleQuote && (
+                  <p className="status">Using base price fallback while rule quote is loading.</p>
+                )}
+                <div className="order-editor-summary-grid">
+                  <span>Subtotal</span>
+                  <strong>${orderEditorTotals.subtotal.toFixed(2)}</strong>
+                  <span>Rule Total (after standard discounts)</span>
+                  <strong>${orderEditorTotals.quoteTotal.toFixed(2)}</strong>
+                  <span>Custom Discount</span>
+                  <strong>-${orderEditorTotals.customDiscount.toFixed(2)}</strong>
+                  <span>Total</span>
+                  <strong>${orderEditorTotals.total.toFixed(2)}</strong>
+                  <span>Estimated Profit</span>
+                  <strong>${orderEditorTotals.grossProfit.toFixed(2)}</strong>
+                </div>
+              </div>
+
+              <div className="actions">
+                <button type="button" className="secondary" onClick={closeOrderEditor}>
+                  Cancel
+                </button>
+                <button type="submit" disabled={isBusy}>
+                  Save Order Changes
+                </button>
+              </div>
+            </form>
+          )}
+        </Modal>
       </div>
     </BrowserRouter>
   );
@@ -1650,17 +2273,19 @@ function Modal({
   open,
   title,
   onClose,
-  children
+  children,
+  size = "default"
 }: {
   open: boolean;
   title: string;
   onClose: () => void;
   children: ReactNode;
+  size?: "default" | "fullscreen";
 }) {
   if (!open) return null;
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+      <div className={`modal-card ${size === "fullscreen" ? "modal-card-fullscreen" : ""}`} onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <h4>{title}</h4>
           <button type="button" className="modal-close" onClick={onClose} aria-label="Close modal">

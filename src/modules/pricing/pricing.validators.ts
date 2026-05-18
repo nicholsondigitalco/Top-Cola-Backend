@@ -106,7 +106,42 @@ export const AdminOrderStatusSchema = z.object({
   note: z.string().max(500).optional()
 });
 
+export const AdminOrderEditSchema = z.object({
+  customerName: z.string().trim().min(2).max(120),
+  customerPhone: z.string().trim().min(7).max(30),
+  customerEmail: z.string().email().optional().nullable(),
+  deliveryAddress: z.string().trim().min(5).max(500),
+  deliveryInstructions: z.string().trim().max(1000).optional().nullable(),
+  paymentMethod: z.enum(["cash", "zelle"]),
+  scheduledDeliveryTime: z.string().datetime().optional().nullable(),
+  status: z.enum(["pending", "out_for_delivery", "complete", "cancelled"]),
+  customDiscount: z.number().nonnegative().default(0),
+  note: z.string().max(500).optional(),
+  items: z
+    .array(
+      z.object({
+        productId: z.string().trim().min(1).max(120),
+        quantity: z.number().int().positive(),
+        variationId: z.string().trim().min(1).max(120).optional()
+      })
+    )
+    .min(1)
+});
+
 export const AdminMinimumOrderSchema = z.object({
   minOrderAmount: z.number().nonnegative(),
   minDeliveryBufferMinutes: z.number().int().nonnegative()
+});
+
+export const AdminNotificationEmailCreateSchema = z.object({
+  email: z.string().trim().email(),
+  name: z.string().trim().min(1).max(120).optional(),
+  isActive: z.boolean().default(true),
+  isPrimary: z.boolean().default(false)
+});
+
+export const AdminNotificationEmailUpdateSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  isActive: z.boolean().optional(),
+  isPrimary: z.boolean().optional()
 });

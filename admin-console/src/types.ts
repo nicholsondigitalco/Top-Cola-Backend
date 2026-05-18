@@ -5,6 +5,7 @@ export interface Product {
   description: string;
   image_url: string | null;
   base_price: number;
+  cogs_per_unit?: number;
   category_slug: string;
   category_name: string;
   pricing_group_slug: string | null;
@@ -84,17 +85,35 @@ export interface OrderRecord {
   payment_method: "cash" | "zelle";
   scheduled_delivery_time?: string | null;
   subtotal: number;
+  custom_discount?: number;
   total: number;
   savings: number;
   gross_profit?: number;
   pricing_snapshot?: {
     items?: Array<{
+      product_id?: string;
       product_name?: string;
       quantity?: number;
       variation_id?: string;
       variation_name?: string;
     }>;
   };
+  created_at: string;
+}
+
+export interface OrderDetailItem {
+  id: string;
+  order_id: string;
+  product_id: string;
+  product_name_snapshot: string;
+  quantity: number;
+  unit_base_price: number;
+  line_subtotal: number;
+  line_discount: number;
+  line_total: number;
+  cogs_per_unit: number;
+  line_cogs_total: number;
+  pricing_group_slug: string;
   created_at: string;
 }
 
@@ -107,4 +126,12 @@ export interface OrderMetrics {
 export interface OrderSettings {
   minOrderAmount: number;
   minDeliveryBufferMinutes: number;
+}
+
+export interface NotificationEmail {
+  id: string;
+  email: string;
+  name: string | null;
+  is_active: boolean;
+  is_primary: boolean;
 }

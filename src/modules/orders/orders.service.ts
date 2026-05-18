@@ -4,6 +4,7 @@ import {
   orderSettingsRepository,
   promoRepository
 } from "../data/repositories.js";
+import { emailService } from "../notifications/email.service.js";
 import { pricingEngine } from "../pricing/pricing.engine.js";
 import type { QuoteItemInput, QuoteResult } from "../pricing/pricing.types.js";
 
@@ -68,6 +69,7 @@ export class OrdersService {
         subtotal: quote.subtotal,
         volume_discount: quote.volumeDiscount,
         promo_discount: quote.promoDiscount,
+        custom_discount: 0,
         total: quote.total,
         savings: quote.savings,
         cogs_total: cogsTotal,
@@ -92,6 +94,20 @@ export class OrdersService {
 
     if (input.promoCode) {
       await promoRepository.incrementUsage(input.promoCode);
+    }
+
+    try {
+      await emailService.sendOrderNotifications({
+        orderId: created.id,
+        customerName: input.customerName,
+        customerPhone: input.customerPhone,
+        customerEmail: input.customerEmail,
+        deliveryAddress: input.deliveryAddress,
+        deliveryInstructions: input.deliveryInstructions,
+        quote
+      });
+    } catch (error) {
+      console.error("Order email notifications failed:", error);
     }
 
     return { order: created, quote };

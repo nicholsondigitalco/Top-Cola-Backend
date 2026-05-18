@@ -1,30 +1,62 @@
-import nodemailer from "nodemailer";
 import { env } from "../../config/env.js";
+import { notificationEmailRepository } from "../data/repositories.js";
 import type { QuoteResult } from "../pricing/pricing.types.js";
 
 interface OrderEmailInput {
   orderId: string;
   customerName: string;
   customerPhone: string;
+  customerEmail?: string;
   deliveryAddress: string;
   deliveryInstructions?: string;
   quote: QuoteResult;
 }
 
 export class EmailService {
-  private transporter = !env.SMTP_HOST
-    ? null
-    : nodemailer.createTransport({
-        host: env.SMTP_HOST,
-        port: env.SMTP_PORT ?? 587,
-        secure: env.SMTP_SECURE ?? false,
-        auth: env.SMTP_USER && env.SMTP_PASS ? { user: env.SMTP_USER, pass: env.SMTP_PASS } : undefined
-      });
+  private readonly apiUrl = "https://api.brevo.com/v3/smtp/email";
 
-  async sendOrderNotification(input: OrderEmailInput): Promise<void> {
-    if (!this.transporter || !env.ORDER_NOTIFICATION_TO || !env.EMAIL_FROM) {
+  private async sendBrevoEmail(payload: {
+    sender: { name: string; email: string };
+    to: Array<{ email: string; name?: string }>;
+    cc?: Array<{ email: string; name?: string }>;
+    subject: string;
+    textContent: string;
+    htmlContent: string;
+  }): Promise<void> {
+    if (!env.BREVO_API_KEY) {
       return;
     }
+
+    const response = await fetch(this.apiUrl, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        "api-key": env.BREVO_API_KEY
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Brevo send failed (${response.status}): ${body}`);
+    }
+  }
+
+  async sendOrderNotifications(input: OrderEmailInput): Promise<void> {
+    if (!env.BREVO_API_KEY) return;
+
+    const recipients = await notificationEmailRepository.list();
+    const activeRecipients = recipients.filter((entry) => entry.is_active);
+    if (activeRecipients.length === 0) return;
+
+    const primary = activeRecipients.find((entry) => entry.is_primary) ?? activeRecipients[0];
+    if (!primary) return;
+
+    const sender = {
+      name: "Top Cola Delivery",
+      email: primary.email
+    };
 
     const lines = input.quote.items
       .map((item) => `${item.product_name} x${item.quantity} = $${item.line_total.toFixed(2)}`)
@@ -46,12 +78,63 @@ export class EmailService {
       `Total: $${input.quote.total.toFixed(2)}`
     ].join("\n");
 
-    await this.transporter.sendMail({
-      from: env.EMAIL_FROM,
-      to: env.ORDER_NOTIFICATION_TO,
+    const html = `<html><body>
+      <p><strong>New order received:</strong> ${input.orderId}</p>
+      <p><strong>Customer:</strong> ${input.customerName}</p>
+      <p><strong>Phone:</strong> ${input.customerPhone}</p>
+      <p><strong>Address:</strong> ${input.deliveryAddress}</p>
+      <p><strong>Instructions:</strong> ${input.deliveryInstructions ?? "n/a"}</p>
+      <p><strong>Items:</strong><br/>${input.quote.items
+        .map((item) => `${item.product_name} x${item.quantity} = $${item.line_total.toFixed(2)}`)
+        .join("<br/>")}</p>
+      <p><strong>Subtotal:</strong> $${input.quote.subtotal.toFixed(2)}<br/>
+      <strong>Volume discount:</strong> -$${input.quote.volumeDiscount.toFixed(2)}<br/>
+      <strong>Promo discount:</strong> -$${input.quote.promoDiscount.toFixed(2)}<br/>
+      <strong>Total:</strong> $${input.quote.total.toFixed(2)}</p>
+    </body></html>`;
+
+    await this.sendBrevoEmail({
+      sender,
+      to: activeRecipients.map((entry) => ({
+        email: entry.email,
+        ...(entry.name ? { name: entry.name } : {})
+      })),
       subject: `New order ${input.orderId}`,
-      text
+      textContent: text,
+      htmlContent: html
     });
+
+    if (input.customerEmail) {
+      const customerText = [
+        `Thanks for your order ${input.orderId}, ${input.customerName}!`,
+        "",
+        "Order summary:",
+        lines,
+        "",
+        `Total: $${input.quote.total.toFixed(2)}`,
+        "We will contact you shortly with delivery updates."
+      ].join("\n");
+      const customerHtml = `<html><body>
+        <p>Thanks for your order <strong>${input.orderId}</strong>, ${input.customerName}!</p>
+        <p><strong>Order summary:</strong><br/>${input.quote.items
+          .map((item) => `${item.product_name} x${item.quantity} = $${item.line_total.toFixed(2)}`)
+          .join("<br/>")}</p>
+        <p><strong>Total:</strong> $${input.quote.total.toFixed(2)}</p>
+        <p>We will contact you shortly with delivery updates.</p>
+      </body></html>`;
+
+      await this.sendBrevoEmail({
+        sender,
+        to: [{ email: input.customerEmail, name: input.customerName }],
+        cc: activeRecipients.map((entry) => ({
+          email: entry.email,
+          ...(entry.name ? { name: entry.name } : {})
+        })),
+        subject: `Order confirmation ${input.orderId}`,
+        textContent: customerText,
+        htmlContent: customerHtml
+      });
+    }
   }
 }
 

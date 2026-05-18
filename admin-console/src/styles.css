@@ -310,6 +310,16 @@ button.danger {
   max-width: 320px;
 }
 
+.toggle-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.toggle-inline input {
+  width: auto;
+}
+
 .split-grid {
   display: grid;
   grid-template-columns: minmax(300px, 0.9fr) minmax(0, 1.3fr);
@@ -794,6 +804,48 @@ button.danger {
   border: 1px solid #dbe3f4;
   box-shadow: 0 24px 60px rgba(15, 23, 42, 0.2);
   padding: 16px;
+}
+
+.modal-card-fullscreen {
+  width: min(1200px, 96vw);
+  max-height: calc(100vh - 24px);
+}
+
+.order-editor-form {
+  display: grid;
+  gap: 12px;
+}
+
+.order-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.order-editor-items {
+  margin: 0;
+  padding: 12px;
+}
+
+.order-editor-summary {
+  margin: 0;
+  padding: 12px;
+}
+
+.order-editor-discount {
+  margin: 0;
+  padding: 12px;
+}
+
+.order-editor-summary-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 14px;
+  align-items: center;
+}
+
+.order-bucket .data-table tbody tr {
+  cursor: pointer;
 }
 
 .modal-header {

@@ -34,6 +34,7 @@ export interface Product {
   description: string;
   image_url: string | null;
   base_price: number;
+  cogs_per_unit?: number;
   category_slug: ProductCategory;
   category_name: string;
   pricing_group_id: string | null;
@@ -111,4 +112,10 @@ export interface QuoteResult {
   total: number;
   items: QuoteLine[];
   groups: GroupBreakdown[];
+}
+
+export interface EditableOrderItemInput {
+  productId: string;
+  quantity: number;
+  unitPrice?: number;
 }
