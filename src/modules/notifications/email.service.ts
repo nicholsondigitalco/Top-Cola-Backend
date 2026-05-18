@@ -14,6 +14,7 @@ interface OrderEmailInput {
 
 export class EmailService {
   private readonly apiUrl = "https://api.brevo.com/v3/smtp/email";
+  private readonly senderEmail = "topcoladelivery@nicholsondigitalco.com";
 
   private async sendBrevoEmail(payload: {
     sender: { name: string; email: string };
@@ -50,12 +51,9 @@ export class EmailService {
     const activeRecipients = recipients.filter((entry) => entry.is_active);
     if (activeRecipients.length === 0) return;
 
-    const primary = activeRecipients.find((entry) => entry.is_primary) ?? activeRecipients[0];
-    if (!primary) return;
-
     const sender = {
       name: "Top Cola Delivery",
-      email: primary.email
+      email: this.senderEmail
     };
 
     const lines = input.quote.items
