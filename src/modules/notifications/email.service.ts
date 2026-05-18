@@ -97,7 +97,7 @@ export class EmailService {
         email: entry.email,
         ...(entry.name ? { name: entry.name } : {})
       })),
-      subject: `New order ${input.orderId}`,
+      subject: `New Order from ${input.customerName}`,
       textContent: text,
       htmlContent: html
     });
@@ -128,7 +128,7 @@ export class EmailService {
           email: entry.email,
           ...(entry.name ? { name: entry.name } : {})
         })),
-        subject: `Order confirmation ${input.orderId}`,
+        subject: "Order Confirmed: Top Cola Delivery",
         textContent: customerText,
         htmlContent: customerHtml
       });
