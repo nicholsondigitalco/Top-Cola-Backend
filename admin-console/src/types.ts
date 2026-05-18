@@ -11,6 +11,7 @@ export interface Product {
   pricing_group_slug: string | null;
   pricing_group_name: string | null;
   variations?: ProductVariation[];
+  tags?: string[];
   gallery_images?: ProductImage[];
   primary_image_url?: string | null;
   avg_order_quantity?: number;

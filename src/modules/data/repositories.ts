@@ -124,6 +124,9 @@ const mapProduct = (row: any): Product => ({
         })
     : [],
   variations: mapProductVariations(row.variations),
+  tags: Array.isArray(row.tags)
+    ? row.tags.map((tag: unknown) => (typeof tag === "string" ? tag.trim() : "")).filter(Boolean)
+    : [],
   avg_order_quantity: Number(row.avg_order_quantity ?? 0),
   avg_discount_per_unit: Number(row.avg_discount_per_unit ?? 0),
   avg_profit_margin_per_unit: Number(row.avg_profit_margin_per_unit ?? 0),
@@ -208,6 +211,20 @@ const mapProductVariations = (value: unknown): ProductVariation[] => {
     .filter((item): item is ProductVariation => Boolean(item));
 };
 
+const normalizeProductTags = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const rawTag of value) {
+    if (typeof rawTag !== "string") continue;
+    const tag = rawTag.trim().toLowerCase();
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    tags.push(tag);
+  }
+  return tags;
+};
+
 const sanitizeIdentifier = (value: string): string =>
   value
     .trim()
@@ -254,12 +271,12 @@ export const catalogRepository = {
     if (error) throw error;
   },
 
-  async listProducts(filters: { categorySlug?: string; active?: boolean } = {}): Promise<Product[]> {
+  async listProducts(filters: { categorySlug?: string; active?: boolean; tags?: string[] } = {}): Promise<Product[]> {
     let query = supabase
       .from("products")
       .select(
         `
-        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, active,
+        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, tags, active,
         avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
         pricing_groups(slug, name),
@@ -275,6 +292,12 @@ export const catalogRepository = {
     if (filters.categorySlug) {
       query = query.eq("product_categories.slug", filters.categorySlug);
     }
+    if (filters.tags && filters.tags.length > 0) {
+      const normalizedTags = normalizeProductTags(filters.tags);
+      if (normalizedTags.length > 0) {
+        query = query.overlaps("tags", normalizedTags);
+      }
+    }
 
     const { data, error } = await query;
     if (error) {
@@ -289,7 +312,7 @@ export const catalogRepository = {
       .from("products")
       .select(
         `
-        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, active,
+        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, tags, active,
         avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
         pricing_groups(slug, name),
@@ -309,7 +332,7 @@ export const catalogRepository = {
       .from("products")
       .select(
         `
-        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, active,
+        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, tags, active,
         avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
         pricing_groups(slug, name),
@@ -342,6 +365,7 @@ export const catalogRepository = {
     category_slug: string;
     pricing_group_slug?: string | null;
     variations?: ProductVariation[];
+    tags?: string[];
     active: boolean;
   }): Promise<Product> {
     const { data: category, error: categoryError } = await supabase
@@ -383,11 +407,12 @@ export const catalogRepository = {
         category_id: category.id,
         pricing_group_id: pricingGroupId,
         variations: payload.variations ?? [],
+        tags: normalizeProductTags(payload.tags ?? []),
         active: payload.active
       })
       .select(
         `
-        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, active,
+        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, tags, active,
         avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
         pricing_groups(slug, name),
@@ -409,6 +434,7 @@ export const catalogRepository = {
     if (patch.image_url !== undefined) nextPatch.image_url = patch.image_url;
     if (patch.base_price !== undefined) nextPatch.base_price = patch.base_price;
     if (patch.variations !== undefined) nextPatch.variations = patch.variations;
+    if (patch.tags !== undefined) nextPatch.tags = normalizeProductTags(patch.tags);
     if (patch.active !== undefined) nextPatch.active = patch.active;
 
     if (patch.category_slug !== undefined) {
@@ -441,7 +467,7 @@ export const catalogRepository = {
       .eq("id", productId)
       .select(
         `
-        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, active,
+        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, tags, active,
         avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
         product_categories!inner(slug, name),
         pricing_groups(slug, name),

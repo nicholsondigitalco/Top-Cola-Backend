@@ -385,6 +385,11 @@ button.danger {
   width: 32%;
 }
 
+.column-tags {
+  min-width: 180px;
+  width: 18%;
+}
+
 .icon-edit-btn {
   width: 28px;
   height: 28px;
@@ -556,6 +561,35 @@ button.danger {
   flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 8px;
+}
+
+.product-tag-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.product-tag-pill,
+.product-tag-pill-empty {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.product-tag-pill {
+  color: #5b21b6;
+  background: #ede9fe;
+  border: 1px solid #ddd6fe;
+}
+
+.product-tag-pill-empty {
+  color: #334155;
+  background: #e2e8f0;
+  border: 1px solid #cbd5e1;
 }
 
 .product-variation-pill,

@@ -44,6 +44,7 @@ export interface Product {
   avg_discount_per_unit?: number;
   avg_profit_margin_per_unit?: number;
   variations?: ProductVariation[];
+  tags?: string[];
   primary_image_url?: string | null;
   gallery_images?: ProductImage[];
   active: boolean;

@@ -86,6 +86,20 @@ const normalizeVariationList = (entries: string[]): ProductVariation[] => {
   return variations;
 };
 
+const normalizeTagList = (entries: string[]): string[] => {
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const entry of entries) {
+    const cleaned = entry.trim();
+    if (!cleaned) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tags.push(cleaned);
+  }
+  return tags;
+};
+
 const formatScheduledTime = (value?: string | null): string => {
   if (!value) return "ASAP";
   const date = new Date(value);
@@ -179,7 +193,9 @@ export function App() {
 
   const [productDraft, setProductDraft] = useState<ProductDraft>(EMPTY_PRODUCT_DRAFT);
   const [productVariationsDraft, setProductVariationsDraft] = useState<ProductVariation[]>([]);
+  const [productTagsDraft, setProductTagsDraft] = useState<string[]>([]);
   const [variationInputValue, setVariationInputValue] = useState("");
+  const [tagInputValue, setTagInputValue] = useState("");
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
   const [productImages, setProductImages] = useState<ProductImage[]>([]);
   const [isUploadingImages, setIsUploadingImages] = useState(false);
@@ -331,8 +347,10 @@ export function App() {
     setEditingProductId(null);
     setProductDraft(EMPTY_PRODUCT_DRAFT);
     setProductVariationsDraft([]);
+    setProductTagsDraft([]);
     setProductImages([]);
     setVariationInputValue("");
+    setTagInputValue("");
     setActiveAddModal("product");
   };
 
@@ -357,8 +375,10 @@ export function App() {
       active: product.active
     });
     setProductVariationsDraft(normalizeVariationList((product.variations ?? []).map((variation) => variation.name)));
+    setProductTagsDraft(normalizeTagList(product.tags ?? []));
     await loadProductImages(product.id);
     setVariationInputValue("");
+    setTagInputValue("");
     setActiveAddModal("product");
   };
 
@@ -371,6 +391,17 @@ export function App() {
 
   const removeVariationTag = (variationId: string) => {
     setProductVariationsDraft((current) => current.filter((variation) => variation.id !== variationId));
+  };
+
+  const addProductTag = () => {
+    const nextTag = tagInputValue.trim();
+    if (!nextTag) return;
+    setProductTagsDraft((current) => normalizeTagList([...current, nextTag]));
+    setTagInputValue("");
+  };
+
+  const removeProductTag = (tagToRemove: string) => {
+    setProductTagsDraft((current) => current.filter((tag) => tag !== tagToRemove));
   };
 
   const uploadProductImages = async (files: File[]) => {
@@ -443,6 +474,7 @@ export function App() {
         categorySlug: productDraft.categorySlug,
         pricingGroupSlug: productDraft.pricingGroupSlug || null,
         variations: productVariationsDraft,
+        tags: productTagsDraft,
         active: productDraft.active
       };
 
@@ -455,8 +487,10 @@ export function App() {
       setEditingProductId(null);
       setProductDraft(EMPTY_PRODUCT_DRAFT);
       setProductVariationsDraft([]);
+      setProductTagsDraft([]);
       setProductImages([]);
       setVariationInputValue("");
+      setTagInputValue("");
       setActiveAddModal(null);
       await loadAll();
     } catch (err) {
@@ -835,7 +869,8 @@ export function App() {
       product.category_slug.toLowerCase().includes(search) ||
       (product.pricing_group_name ?? "").toLowerCase().includes(search) ||
       (product.pricing_group_slug ?? "no_volume_discount").toLowerCase().includes(search) ||
-      (product.variations ?? []).some((variation) => variation.name.toLowerCase().includes(search))
+      (product.variations ?? []).some((variation) => variation.name.toLowerCase().includes(search)) ||
+      (product.tags ?? []).some((tag) => tag.toLowerCase().includes(search))
     );
   });
 
@@ -1131,6 +1166,7 @@ export function App() {
                         <th>Product</th>
                         <th>Category</th>
                         <th>Pricing Group</th>
+                        <th className="column-tags">Tags</th>
                         <th className="column-variations">Variations</th>
                         <th>Avg Qty</th>
                         <th>Avg Discount / Unit</th>
@@ -1172,6 +1208,19 @@ export function App() {
                           <td>
                             {p.pricing_group_name ?? p.pricing_group_slug ?? "No volume discount"}
                             <div className="muted">{p.pricing_group_slug ?? "none"}</div>
+                          </td>
+                          <td className="column-variations">
+                            <div className="product-tag-tags">
+                              {(p.tags ?? []).length > 0 ? (
+                                (p.tags ?? []).map((tag) => (
+                                  <span key={`${p.id}-tag-${tag}`} className="product-tag-pill">
+                                    {tag}
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="product-tag-pill-empty">No tags</span>
+                              )}
+                            </div>
                           </td>
                           <td className="column-variations">
                             <div className="product-variation-tags">
@@ -1596,8 +1645,10 @@ export function App() {
           onClose={() => {
             setEditingProductId(null);
             setVariationInputValue("");
+            setTagInputValue("");
             setProductImages([]);
             setProductVariationsDraft([]);
+            setProductTagsDraft([]);
             setProductDraft(EMPTY_PRODUCT_DRAFT);
             setActiveAddModal(null);
           }}
@@ -1671,6 +1722,45 @@ export function App() {
                     }}
                   />
                   <button type="button" className="small-action-btn" onClick={addVariationTag}>
+                    Add
+                  </button>
+                </div>
+              </div>
+            </Field>
+            <Field label="Tags (optional)">
+              <div className="variation-editor">
+                <div className="variation-tags">
+                  {productTagsDraft.length > 0 ? (
+                    productTagsDraft.map((tag) => (
+                      <span key={tag} className="variation-tag">
+                        {tag}
+                        <button
+                          type="button"
+                          className="variation-tag-remove"
+                          onClick={() => removeProductTag(tag)}
+                          aria-label={`Remove ${tag}`}
+                        >
+                          x
+                        </button>
+                      </span>
+                    ))
+                  ) : (
+                    <span className="variation-tag-empty">No tags added yet</span>
+                  )}
+                </div>
+                <div className="variation-entry-row">
+                  <input
+                    placeholder="Type a tag and press Enter"
+                    value={tagInputValue}
+                    onChange={(e) => setTagInputValue(e.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        addProductTag();
+                      }
+                    }}
+                  />
+                  <button type="button" className="small-action-btn" onClick={addProductTag}>
                     Add
                   </button>
                 </div>

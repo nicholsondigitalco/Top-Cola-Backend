@@ -10,6 +10,7 @@ const ProductVariationSchema = z.object({
   id: z.string().trim().min(1).max(80),
   name: z.string().trim().min(1).max(120)
 });
+const ProductTagSchema = z.string().trim().min(1).max(40);
 
 export const QuoteRequestSchema = z.object({
   items: z.array(QuoteItemSchema).min(1),
@@ -38,6 +39,7 @@ export const ProductCreateSchema = z.object({
   categorySlug: z.string().trim().min(2).max(80),
   pricingGroupSlug: z.string().trim().min(2).max(80).nullable().optional(),
   variations: z.array(ProductVariationSchema).max(50).optional(),
+  tags: z.array(ProductTagSchema).max(50).optional(),
   active: z.boolean().default(true)
 });
 
