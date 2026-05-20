@@ -115,6 +115,7 @@ export const AdminOrderEditSchema = z.object({
   deliveryAddress: z.string().trim().min(5).max(500),
   deliveryInstructions: z.string().trim().max(1000).optional().nullable(),
   paymentMethod: z.enum(["cash", "zelle"]),
+  promoCode: z.string().trim().min(2).max(40).optional().nullable(),
   scheduledDeliveryTime: z.string().datetime().optional().nullable(),
   status: z.enum(["pending", "out_for_delivery", "complete", "cancelled"]),
   customDiscount: z.number().nonnegative().default(0),

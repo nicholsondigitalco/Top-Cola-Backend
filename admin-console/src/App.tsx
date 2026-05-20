@@ -52,6 +52,7 @@ interface ProductDraft {
 
 interface OrderEditorItem {
   productId: string;
+  productQuery: string;
   quantity: string;
   variationId?: string;
 }
@@ -137,6 +138,13 @@ const formatOrderPlacedTime = (value: string): string => {
   return `${day} at ${time}`;
 };
 
+const getOrderPromoCode = (order: OrderRecord): string | null => {
+  const direct = order.promo_code?.trim();
+  if (direct) return direct;
+  const fromSnapshot = order.pricing_snapshot?.promoCode?.trim();
+  return fromSnapshot || null;
+};
+
 const getCategoryTagStyle = (categorySlug?: string) => {
   if (!categorySlug) {
     return {
@@ -210,12 +218,15 @@ export function App() {
     deliveryAddress: "",
     deliveryInstructions: "",
     paymentMethod: "cash" as "cash" | "zelle",
+    promoCode: "",
     scheduledDeliveryTime: "",
     status: "pending" as OrderRecord["status"],
     customDiscount: "0",
     note: ""
   });
   const [orderEditorItems, setOrderEditorItems] = useState<OrderEditorItem[]>([]);
+  const [isAddItemMenuOpen, setIsAddItemMenuOpen] = useState(false);
+  const [newOrderItemDraft, setNewOrderItemDraft] = useState({ productQuery: "", quantity: "1" });
   const [orderQuotePreview, setOrderQuotePreview] = useState<{
     subtotal: number;
     total: number;
@@ -649,6 +660,19 @@ export function App() {
     }
   };
 
+  const resolveProductFromQuery = (query: string): Product | null => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return null;
+    const byId = products.find((product) => product.id.toLowerCase() === normalized);
+    if (byId) return byId;
+    const byLabel = products.find(
+      (product) => `${product.name} (${product.id})`.trim().toLowerCase() === normalized
+    );
+    if (byLabel) return byLabel;
+    const byName = products.find((product) => product.name.trim().toLowerCase() === normalized);
+    return byName ?? null;
+  };
+
   const openOrderEditor = async (orderId: string) => {
     setOrderEditorLoading(true);
     setError(null);
@@ -663,6 +687,7 @@ export function App() {
         deliveryAddress: order.delivery_address ?? "",
         deliveryInstructions: order.delivery_instructions ?? "",
         paymentMethod: order.payment_method ?? "cash",
+        promoCode: getOrderPromoCode(order) ?? "",
         scheduledDeliveryTime: order.scheduled_delivery_time
           ? new Date(order.scheduled_delivery_time).toISOString().slice(0, 16)
           : "",
@@ -673,6 +698,9 @@ export function App() {
       setOrderEditorItems(
         detail.items.map((item) => ({
           productId: item.product_id,
+          productQuery: item.product_name_snapshot
+            ? `${item.product_name_snapshot} (${item.product_id})`
+            : item.product_id,
           quantity: String(Math.max(1, Math.round(Number(item.quantity))))
         }))
       );
@@ -685,15 +713,29 @@ export function App() {
   };
 
   const addOrderEditorItem = () => {
-    const defaultProduct = products[0];
-    if (!defaultProduct) return;
+    if (products.length === 0) return;
+    setError(null);
+    setNewOrderItemDraft({ productQuery: "", quantity: "1" });
+    setIsAddItemMenuOpen(true);
+  };
+
+  const confirmAddOrderEditorItem = () => {
+    const selectedProduct = resolveProductFromQuery(newOrderItemDraft.productQuery);
+    if (!selectedProduct) {
+      setError("Select a valid product from the list.");
+      return;
+    }
+    const quantity = Math.max(1, Math.floor(Number(newOrderItemDraft.quantity) || 1));
     setOrderEditorItems((current) => [
       ...current,
       {
-        productId: defaultProduct.id,
-        quantity: "1"
+        productId: selectedProduct.id,
+        productQuery: `${selectedProduct.name} (${selectedProduct.id})`,
+        quantity: String(quantity)
       }
     ]);
+    setIsAddItemMenuOpen(false);
+    setNewOrderItemDraft({ productQuery: "", quantity: "1" });
   };
 
   const updateOrderEditorItem = (index: number, patch: Partial<OrderEditorItem>) => {
@@ -710,6 +752,8 @@ export function App() {
     setIsOrderEditorOpen(false);
     setEditingOrderId(null);
     setOrderEditorItems([]);
+    setIsAddItemMenuOpen(false);
+    setNewOrderItemDraft({ productQuery: "", quantity: "1" });
     setOrderQuotePreview(null);
     setOrderEditor({
       customerName: "",
@@ -718,6 +762,7 @@ export function App() {
       deliveryAddress: "",
       deliveryInstructions: "",
       paymentMethod: "cash",
+      promoCode: "",
       scheduledDeliveryTime: "",
       status: "pending",
       customDiscount: "0",
@@ -749,6 +794,7 @@ export function App() {
         deliveryAddress: orderEditor.deliveryAddress,
         deliveryInstructions: orderEditor.deliveryInstructions || null,
         paymentMethod: orderEditor.paymentMethod,
+        promoCode: orderEditor.promoCode || undefined,
         scheduledDeliveryTime: orderEditor.scheduledDeliveryTime
           ? new Date(orderEditor.scheduledDeliveryTime).toISOString()
           : null,
@@ -907,6 +953,7 @@ export function App() {
   const orderRows = dateFilteredOrders.filter((order) => {
     const search = orderSearch.trim().toLowerCase();
     if (!search) return true;
+    const promoCode = (getOrderPromoCode(order) ?? "").toLowerCase();
     const itemText = (order.pricing_snapshot?.items ?? [])
       .map((item) => `${item.product_name ?? ""} ${item.quantity ?? ""}`.trim())
       .join(" ")
@@ -916,6 +963,7 @@ export function App() {
       order.customer_name.toLowerCase().includes(search) ||
       order.delivery_address.toLowerCase().includes(search) ||
       STATUS_LABELS[order.status].toLowerCase().includes(search) ||
+      promoCode.includes(search) ||
       itemText.includes(search)
     );
   });
@@ -955,7 +1003,7 @@ export function App() {
         savings: number;
         volumeDiscount: number;
         promoDiscount: number;
-      }>("/pricing/quote", "POST", { items: normalizedItems })
+      }>("/admin/pricing/quote", "POST", { items: normalizedItems, promoCode: orderEditor.promoCode || undefined })
       .then((quote) => {
         if (!cancelled) setOrderQuotePreview(quote);
       })
@@ -965,7 +1013,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [client, isOrderEditorOpen, orderEditorItems]);
+  }, [client, isOrderEditorOpen, orderEditor.promoCode, orderEditorItems]);
   const orderEditorTotals = useMemo(() => {
     const fallbackSubtotal = orderEditorItems.reduce((sum, item) => {
       const quantity = Math.max(1, Math.floor(Number(item.quantity) || 0));
@@ -1584,7 +1632,8 @@ export function App() {
                               </tr>
                             </thead>
                             <tbody>
-                              {bucket.rows.map((order) => (
+                              {bucket.rows.map((order) => {
+                                return (
                                 <tr
                                   key={order.id}
                                   className={updatingOrderIds.includes(order.id) ? "order-updating-row" : ""}
@@ -1625,7 +1674,8 @@ export function App() {
                                   <td>{formatScheduledTime(order.scheduled_delivery_time)}</td>
                                   <td>{formatOrderPlacedTime(order.created_at)}</td>
                                 </tr>
-                              ))}
+                                );
+                              })}
                             </tbody>
                           </table>
                         )}
@@ -2007,6 +2057,9 @@ export function App() {
                     <option value="zelle">Zelle</option>
                   </select>
                 </Field>
+                <Field label="Promo Code">
+                  <input value={orderEditor.promoCode} readOnly placeholder="No promo applied" />
+                </Field>
                 <Field label="Scheduled Delivery">
                   <input
                     type="datetime-local"
@@ -2064,6 +2117,44 @@ export function App() {
                     Add Item
                   </button>
                 </div>
+                {isAddItemMenuOpen && (
+                  <div className="row" style={{ marginBottom: 12 }}>
+                    <Field label="Product">
+                      <input
+                        list="order-products-list"
+                        value={newOrderItemDraft.productQuery}
+                        placeholder="Search product name"
+                        onChange={(event) =>
+                          setNewOrderItemDraft((current) => ({ ...current, productQuery: event.target.value }))
+                        }
+                      />
+                    </Field>
+                    <Field label="Quantity">
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={newOrderItemDraft.quantity}
+                        onChange={(event) =>
+                          setNewOrderItemDraft((current) => ({ ...current, quantity: event.target.value }))
+                        }
+                      />
+                    </Field>
+                    <div className="actions" style={{ alignSelf: "end" }}>
+                      <button type="button" className="secondary" onClick={() => setIsAddItemMenuOpen(false)}>
+                        Cancel
+                      </button>
+                      <button type="button" onClick={confirmAddOrderEditorItem}>
+                        Add
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <datalist id="order-products-list">
+                  {products.map((product) => (
+                    <option key={product.id} value={`${product.name} (${product.id})`} />
+                  ))}
+                </datalist>
                 <table className="data-table compact">
                   <thead>
                     <tr>
@@ -2082,16 +2173,20 @@ export function App() {
                       return (
                         <tr key={`order-item-${index}`}>
                           <td>
-                            <select
-                              value={item.productId}
-                              onChange={(event) => updateOrderEditorItem(index, { productId: event.target.value })}
-                            >
-                              {products.map((product) => (
-                                <option key={product.id} value={product.id}>
-                                  {product.name} ({product.id})
-                                </option>
-                              ))}
-                            </select>
+                            <input
+                              list="order-products-list"
+                              value={item.productQuery}
+                              placeholder="Search product name"
+                              onChange={(event) => {
+                                const productQuery = event.target.value;
+                                const matched = resolveProductFromQuery(productQuery);
+                                updateOrderEditorItem(index, {
+                                  productQuery,
+                                  ...(matched ? { productId: matched.id } : {})
+                                });
+                              }}
+                            />
+                            <div className="muted">{item.productId || "No product selected"}</div>
                           </td>
                           <td>
                             <input
@@ -2151,8 +2246,14 @@ export function App() {
                   <p className="status">Using base price fallback while rule quote is loading.</p>
                 )}
                 <div className="order-editor-summary-grid">
+                  <span>Applied Promo</span>
+                  <strong>{orderEditor.promoCode || "None"}</strong>
                   <span>Subtotal</span>
                   <strong>${orderEditorTotals.subtotal.toFixed(2)}</strong>
+                  <span>Volume Discount</span>
+                  <strong>-${Number(orderQuotePreview?.volumeDiscount ?? 0).toFixed(2)}</strong>
+                  <span>Promo Discount</span>
+                  <strong>-${Number(orderQuotePreview?.promoDiscount ?? 0).toFixed(2)}</strong>
                   <span>Rule Total (after standard discounts)</span>
                   <strong>${orderEditorTotals.quoteTotal.toFixed(2)}</strong>
                   <span>Custom Discount</span>

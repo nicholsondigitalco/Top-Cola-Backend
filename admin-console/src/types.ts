@@ -86,11 +86,16 @@ export interface OrderRecord {
   payment_method: "cash" | "zelle";
   scheduled_delivery_time?: string | null;
   subtotal: number;
+  volume_discount?: number;
+  promo_discount?: number;
   custom_discount?: number;
   total: number;
   savings: number;
+  promo_code?: string | null;
   gross_profit?: number;
   pricing_snapshot?: {
+    promoCode?: string;
+    promoDiscount?: number;
     items?: Array<{
       product_id?: string;
       product_name?: string;

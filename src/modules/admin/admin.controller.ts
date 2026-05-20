@@ -32,7 +32,8 @@ import {
   ProductCreateSchema,
   ProductUpdateSchema,
   PromoCreateSchema,
-  PromoUpdateSchema
+  PromoUpdateSchema,
+  QuoteRequestSchema
 } from "../pricing/pricing.validators.js";
 import { orderStatusService } from "../orders/order-status.service.js";
 import { supabase } from "../../lib/supabase.js";
@@ -396,6 +397,16 @@ adminRouter.patch("/admin/pricing-rules/:ruleId", async (req, res, next) => {
   }
 });
 
+adminRouter.post("/admin/pricing/quote", async (req, res, next) => {
+  try {
+    const payload = QuoteRequestSchema.parse(req.body);
+    const quote = await pricingEngine.quote(payload, { ignoreRuleConstraints: true });
+    res.json(quote);
+  } catch (error) {
+    next(error);
+  }
+});
+
 adminRouter.get("/admin/orders", async (_req, res, next) => {
   try {
     res.json({ orders: await orderRepository.listOrders() });
@@ -436,7 +447,11 @@ adminRouter.patch("/admin/orders/:orderId", async (req, res, next) => {
       quantity: item.quantity,
       variationId: item.variationId
     }));
-    const quote = await pricingEngine.quote({ items: quoteInputItems });
+    const normalizedPromoCode = payload.promoCode?.trim() || undefined;
+    const quote = await pricingEngine.quote(
+      { items: quoteInputItems, promoCode: normalizedPromoCode },
+      { ignoreRuleConstraints: true }
+    );
 
     const productIds = [...new Set(quoteInputItems.map((item) => item.productId))];
     const productCosts = await catalogRepository.getProductCostsByIds(productIds);
@@ -472,6 +487,7 @@ adminRouter.patch("/admin/orders/:orderId", async (req, res, next) => {
       subtotal: quote.subtotal,
       volumeDiscount: quote.volumeDiscount,
       promoDiscount: quote.promoDiscount,
+      promoCode: normalizedPromoCode,
       customDiscount: appliedCustomDiscount,
       savings,
       total,
@@ -497,7 +513,7 @@ adminRouter.patch("/admin/orders/:orderId", async (req, res, next) => {
         savings,
         cogs_total: cogsTotal,
         gross_profit: grossProfit,
-        promo_code: undefined,
+        promo_code: normalizedPromoCode,
         pricing_snapshot: pricingSnapshot
       },
       items,

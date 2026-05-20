@@ -98,7 +98,10 @@ const assertPromoWindow = (startsAt: string | null, endsAt: string | null) => {
 };
 
 export class PricingEngine {
-  async quote(input: { items: QuoteItemInput[]; promoCode?: string }): Promise<QuoteResult> {
+  async quote(
+    input: { items: QuoteItemInput[]; promoCode?: string },
+    options: { ignoreRuleConstraints?: boolean } = {}
+  ): Promise<QuoteResult> {
     const productIds = [...new Set(input.items.map((item) => item.productId))];
     const products = await catalogRepository.getProductsByIds(productIds);
     const productMap = new Map(products.map((product) => [product.id, product]));
@@ -163,7 +166,9 @@ export class PricingEngine {
       const itemQuantities = groupRows.map((row) => row.quantity);
       const groupSlug = groupRows[0].product.pricing_group_slug ?? pricingGroupId;
 
-      validateConstraints(rule, itemQuantities, metricTotal, groupSlug);
+      if (!options.ignoreRuleConstraints) {
+        validateConstraints(rule, itemQuantities, metricTotal, groupSlug);
+      }
 
       const groupSubtotal = roundCurrency(
         groupRows.reduce((sum, row) => sum + row.product.base_price * row.quantity, 0)
