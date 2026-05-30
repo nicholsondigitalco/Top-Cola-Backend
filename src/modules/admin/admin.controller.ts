@@ -129,14 +129,17 @@ adminRouter.post("/admin/products", async (req, res, next) => {
     const product = await catalogRepository.createProduct({
       sku: payload.sku,
       name: payload.name,
-      description: payload.description,
+      short_description: payload.shortDescription,
+      long_description: payload.longDescription,
       image_url: payload.imageUrl,
       base_price: payload.basePrice,
+      cogs_per_unit: payload.cogsPerUnit,
       category_slug: payload.categorySlug,
       pricing_group_slug: payload.pricingGroupSlug,
       variations: payload.variations,
       tags: payload.tags,
-      active: payload.active
+      active: payload.active,
+      is_starred: payload.isStarred
     });
     res.status(201).json({ product });
   } catch (error) {
@@ -150,14 +153,17 @@ adminRouter.patch("/admin/products/:productId", async (req, res, next) => {
     const product = await catalogRepository.updateProduct(req.params.productId, {
       sku: payload.sku,
       name: payload.name,
-      description: payload.description,
-      image_url: payload.imageUrl,
+      short_description: payload.shortDescription,
+      long_description: payload.longDescription,
+      image_url: payload.imageUrl === "" ? null : payload.imageUrl,
       base_price: payload.basePrice,
+      cogs_per_unit: payload.cogsPerUnit,
       category_slug: payload.categorySlug,
       pricing_group_slug: payload.pricingGroupSlug,
       variations: payload.variations,
       tags: payload.tags,
-      active: payload.active
+      active: payload.active,
+      is_starred: payload.isStarred
     });
     res.json({ product });
   } catch (error) {

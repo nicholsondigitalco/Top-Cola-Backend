@@ -9,7 +9,7 @@ export interface OrderInsertInput {
   delivery_instructions?: string;
   payment_method: "cash" | "zelle";
   scheduled_delivery_time?: string;
-  status: "pending" | "out_for_delivery" | "complete" | "cancelled";
+  status: "pending" | "complete" | "cancelled";
   subtotal: number;
   volume_discount: number;
   promo_discount: number;
@@ -44,7 +44,7 @@ export interface OrderItemRecord extends OrderItemInsertInput {
 
 export interface OrderRecord {
   id: string;
-  status: "pending" | "out_for_delivery" | "complete" | "cancelled";
+  status: "pending" | "complete" | "cancelled";
   created_at: string;
   customer_name: string;
   customer_phone: string;
@@ -96,14 +96,24 @@ export interface NotificationEmailRecord {
   updated_at: string;
 }
 
+const PRODUCT_DETAIL_SELECT = `
+  id, sku, name, short_description, long_description, image_url, base_price, cogs_per_unit, category_id, pricing_group_id, variations, tags, active, is_starred,
+  avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit, created_at, updated_at,
+  product_categories!inner(slug, name),
+  pricing_groups(slug, name),
+  product_images(id, image_url, is_primary, sort_order)
+`;
+
 const mapProduct = (row: any): Product => ({
   id: row.id,
   sku: row.sku,
   name: row.name,
-  description: row.description,
+  short_description: row.short_description ?? "",
+  long_description: row.long_description ?? "",
   image_url: row.image_url,
   base_price: Number(row.base_price),
   cogs_per_unit: Number(row.cogs_per_unit ?? 0),
+  category_id: row.category_id,
   category_slug: row.product_categories.slug,
   category_name: row.product_categories.name,
   pricing_group_id: row.pricing_group_id,
@@ -130,7 +140,10 @@ const mapProduct = (row: any): Product => ({
   avg_order_quantity: Number(row.avg_order_quantity ?? 0),
   avg_discount_per_unit: Number(row.avg_discount_per_unit ?? 0),
   avg_profit_margin_per_unit: Number(row.avg_profit_margin_per_unit ?? 0),
-  active: row.active
+  active: row.active,
+  is_starred: Boolean(row.is_starred),
+  created_at: row.created_at,
+  updated_at: row.updated_at
 });
 
 const mapRule = (row: any): PricingRule => ({
@@ -147,6 +160,7 @@ const mapRule = (row: any): PricingRule => ({
 const mapPromo = (row: any): PromoCode => ({
   id: row.id,
   code: row.code,
+  description: row.description ?? null,
   discount_type: row.discount_type,
   discount_value: Number(row.discount_value),
   min_subtotal: Number(row.min_subtotal),
@@ -274,15 +288,7 @@ export const catalogRepository = {
   async listProducts(filters: { categorySlug?: string; active?: boolean; tags?: string[] } = {}): Promise<Product[]> {
     let query = supabase
       .from("products")
-      .select(
-        `
-        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, tags, active,
-        avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
-        product_categories!inner(slug, name),
-        pricing_groups(slug, name),
-        product_images(id, image_url, is_primary, sort_order)
-      `
-      )
+      .select(PRODUCT_DETAIL_SELECT)
       .order("created_at", { ascending: false });
 
     if (filters.active !== undefined) {
@@ -310,15 +316,7 @@ export const catalogRepository = {
   async getProductsByIds(productIds: string[]): Promise<Product[]> {
     const { data, error } = await supabase
       .from("products")
-      .select(
-        `
-        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, tags, active,
-        avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
-        product_categories!inner(slug, name),
-        pricing_groups(slug, name),
-        product_images(id, image_url, is_primary, sort_order)
-      `
-      )
+      .select(PRODUCT_DETAIL_SELECT)
       .in("id", productIds)
       .eq("active", true);
     if (error) {
@@ -330,15 +328,7 @@ export const catalogRepository = {
   async getProductById(productId: string): Promise<Product | null> {
     const { data, error } = await supabase
       .from("products")
-      .select(
-        `
-        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, tags, active,
-        avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
-        product_categories!inner(slug, name),
-        pricing_groups(slug, name),
-        product_images(id, image_url, is_primary, sort_order)
-      `
-      )
+      .select(PRODUCT_DETAIL_SELECT)
       .eq("id", productId)
       .maybeSingle();
     if (error) throw error;
@@ -359,14 +349,17 @@ export const catalogRepository = {
   async createProduct(payload: {
     sku?: string;
     name: string;
-    description: string;
+    short_description?: string;
+    long_description?: string;
     image_url?: string;
     base_price: number;
+    cogs_per_unit?: number;
     category_slug: string;
     pricing_group_slug?: string | null;
     variations?: ProductVariation[];
     tags?: string[];
     active: boolean;
+    is_starred?: boolean;
   }): Promise<Product> {
     const { data: category, error: categoryError } = await supabase
       .from("product_categories")
@@ -401,24 +394,19 @@ export const catalogRepository = {
         id: resolvedSku,
         sku: resolvedSku,
         name: payload.name,
-        description: payload.description,
+        short_description: payload.short_description ?? "",
+        long_description: payload.long_description ?? "",
         image_url: payload.image_url,
         base_price: payload.base_price,
+        cogs_per_unit: payload.cogs_per_unit ?? 0,
         category_id: category.id,
         pricing_group_id: pricingGroupId,
         variations: payload.variations ?? [],
         tags: normalizeProductTags(payload.tags ?? []),
-        active: payload.active
+        active: payload.active,
+        is_starred: payload.is_starred ?? false
       })
-      .select(
-        `
-        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, tags, active,
-        avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
-        product_categories!inner(slug, name),
-        pricing_groups(slug, name),
-        product_images(id, image_url, is_primary, sort_order)
-      `
-      )
+      .select(PRODUCT_DETAIL_SELECT)
       .single();
 
     if (error) {
@@ -429,13 +417,17 @@ export const catalogRepository = {
 
   async updateProduct(productId: string, patch: Record<string, unknown>): Promise<Product> {
     const nextPatch: Record<string, unknown> = {};
+    if (patch.sku !== undefined) nextPatch.sku = patch.sku;
     if (patch.name !== undefined) nextPatch.name = patch.name;
-    if (patch.description !== undefined) nextPatch.description = patch.description;
+    if (patch.short_description !== undefined) nextPatch.short_description = patch.short_description;
+    if (patch.long_description !== undefined) nextPatch.long_description = patch.long_description;
     if (patch.image_url !== undefined) nextPatch.image_url = patch.image_url;
     if (patch.base_price !== undefined) nextPatch.base_price = patch.base_price;
+    if (patch.cogs_per_unit !== undefined) nextPatch.cogs_per_unit = patch.cogs_per_unit;
     if (patch.variations !== undefined) nextPatch.variations = patch.variations;
     if (patch.tags !== undefined) nextPatch.tags = normalizeProductTags(patch.tags);
     if (patch.active !== undefined) nextPatch.active = patch.active;
+    if (patch.is_starred !== undefined) nextPatch.is_starred = patch.is_starred;
 
     if (patch.category_slug !== undefined) {
       const { data: category, error } = await supabase
@@ -465,15 +457,7 @@ export const catalogRepository = {
       .from("products")
       .update(nextPatch)
       .eq("id", productId)
-      .select(
-        `
-        id, sku, name, description, image_url, base_price, cogs_per_unit, pricing_group_id, variations, tags, active,
-        avg_order_quantity, avg_discount_per_unit, avg_profit_margin_per_unit,
-        product_categories!inner(slug, name),
-        pricing_groups(slug, name),
-        product_images(id, image_url, is_primary, sort_order)
-      `
-      )
+      .select(PRODUCT_DETAIL_SELECT)
       .single();
     if (error) throw error;
     return mapProduct(data);

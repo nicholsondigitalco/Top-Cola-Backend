@@ -31,11 +31,13 @@ export interface Product {
   id: string;
   sku: string | null;
   name: string;
-  description: string;
+  short_description: string;
+  long_description: string;
   image_url: string | null;
   base_price: number;
   cogs_per_unit?: number;
-  category_slug: ProductCategory;
+  category_id: string;
+  category_slug: string;
   category_name: string;
   pricing_group_id: string | null;
   pricing_group_slug: string | null;
@@ -48,6 +50,9 @@ export interface Product {
   primary_image_url?: string | null;
   gallery_images?: ProductImage[];
   active: boolean;
+  is_starred: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface QuoteItemInput {
@@ -71,6 +76,7 @@ export interface ProductImage {
 export interface PromoCode {
   id: string;
   code: string;
+  description?: string | null;
   discount_type: "percent" | "fixed";
   discount_value: number;
   min_subtotal: number;

@@ -2,12 +2,15 @@ export interface Product {
   id: string;
   sku: string | null;
   name: string;
-  description: string;
+  short_description: string;
+  long_description: string;
   image_url: string | null;
   base_price: number;
   cogs_per_unit?: number;
+  category_id: string;
   category_slug: string;
   category_name: string;
+  pricing_group_id: string | null;
   pricing_group_slug: string | null;
   pricing_group_name: string | null;
   variations?: ProductVariation[];
@@ -18,6 +21,9 @@ export interface Product {
   avg_discount_per_unit?: number;
   avg_profit_margin_per_unit?: number;
   active: boolean;
+  is_starred: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ProductVariation {
@@ -45,9 +51,11 @@ export interface ProductCategory {
 export interface PromoCode {
   id: string;
   code: string;
+  description?: string | null;
   discount_type: "percent" | "fixed";
   discount_value: number;
   min_subtotal: number;
+  max_discount?: number | null;
   active: boolean;
   usage_limit: number | null;
   used_count: number;
@@ -77,7 +85,7 @@ export interface PricingConstraints {
 
 export interface OrderRecord {
   id: string;
-  status: "pending" | "out_for_delivery" | "complete" | "cancelled";
+  status: "pending" | "complete" | "cancelled";
   customer_name: string;
   customer_phone: string;
   customer_email: string | null;

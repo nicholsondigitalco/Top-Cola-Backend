@@ -28,15 +28,20 @@ describe("PricingEngine", () => {
         id: "00000000-0000-0000-0000-000000000001",
         sku: "VAPE-1",
         name: "Vape",
-        description: "",
+        short_description: "",
+        long_description: "",
         image_url: null,
         base_price: 35,
         category_slug: "vapes",
         category_name: "Vapes",
+        category_id: "vapes",
         pricing_group_id: "group-vape",
         pricing_group_slug: "vape_default",
         pricing_group_name: "Vape Default",
-        active: true
+        active: true,
+        is_starred: false,
+        created_at: "2024-01-01T00:00:00.000Z",
+        updated_at: "2024-01-01T00:00:00.000Z"
       }
     ]);
     vi.mocked(pricingRepository.getRulesByPricingGroupIds).mockResolvedValue([

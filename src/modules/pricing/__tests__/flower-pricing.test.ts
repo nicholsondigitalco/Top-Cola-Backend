@@ -29,29 +29,39 @@ describe("Flower pricing", () => {
         id: "00000000-0000-0000-0000-000000000101",
         sku: "FLOW-PREMIUM-1",
         name: "Premium Flower A",
-        description: "",
+        short_description: "",
+        long_description: "",
         image_url: null,
         base_price: 10,
         category_slug: "flower",
         category_name: "Flower",
+        category_id: "flower",
         pricing_group_id: "flower-premium-group",
         pricing_group_slug: "flower_premium",
         pricing_group_name: "Flower Premium",
-        active: true
+        active: true,
+        is_starred: false,
+        created_at: "2024-01-01T00:00:00.000Z",
+        updated_at: "2024-01-01T00:00:00.000Z"
       },
       {
         id: "00000000-0000-0000-0000-000000000102",
         sku: "FLOW-PREMIUM-2",
         name: "Premium Flower B",
-        description: "",
+        short_description: "",
+        long_description: "",
         image_url: null,
         base_price: 10,
         category_slug: "flower",
         category_name: "Flower",
+        category_id: "flower",
         pricing_group_id: "flower-premium-group",
         pricing_group_slug: "flower_premium",
         pricing_group_name: "Flower Premium",
-        active: true
+        active: true,
+        is_starred: false,
+        created_at: "2024-01-01T00:00:00.000Z",
+        updated_at: "2024-01-01T00:00:00.000Z"
       }
     ]);
 
@@ -97,15 +107,20 @@ describe("Flower pricing", () => {
         id: "00000000-0000-0000-0000-000000000201",
         sku: "FLOW-SMALL-1",
         name: "Smalls",
-        description: "",
+        short_description: "",
+        long_description: "",
         image_url: null,
         base_price: 3.125,
         category_slug: "flower",
         category_name: "Flower",
+        category_id: "flower",
         pricing_group_id: "flower-smalls-group",
         pricing_group_slug: "flower_smalls",
         pricing_group_name: "Flower Smalls",
-        active: true
+        active: true,
+        is_starred: false,
+        created_at: "2024-01-01T00:00:00.000Z",
+        updated_at: "2024-01-01T00:00:00.000Z"
       }
     ]);
 

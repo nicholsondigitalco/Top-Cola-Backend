@@ -26,15 +26,9 @@ const ADMIN_TABS: { id: AdminTab; label: string }[] = [
   { id: "categories", label: "Categories" },
   { id: "settings", label: "Settings" }
 ];
-const STATUS_OPTIONS: OrderRecord["status"][] = [
-  "pending",
-  "out_for_delivery",
-  "complete",
-  "cancelled"
-];
+const STATUS_OPTIONS: OrderRecord["status"][] = ["pending", "complete", "cancelled"];
 const STATUS_LABELS: Record<OrderRecord["status"], string> = {
   pending: "Pending",
-  out_for_delivery: "Out for Delivery",
   complete: "Complete",
   cancelled: "Cancelled"
 };
@@ -43,11 +37,22 @@ type OrderDateFilter = "today" | "yesterday" | "last7" | "all";
 interface ProductDraft {
   sku: string;
   name: string;
-  description: string;
+  shortDescription: string;
+  longDescription: string;
   basePrice: string;
+  basePriceMethod: "unit" | "weighted";
+  cogsPrice: string;
+  cogsPriceMethod: "unit" | "weighted";
   categorySlug: string;
   pricingGroupSlug: string;
   active: boolean;
+}
+
+interface PendingProductImage {
+  id: string;
+  file: File;
+  previewUrl: string;
+  isPrimary: boolean;
 }
 
 interface OrderEditorItem {
@@ -60,8 +65,12 @@ interface OrderEditorItem {
 const EMPTY_PRODUCT_DRAFT: ProductDraft = {
   sku: "",
   name: "",
-  description: "",
+  shortDescription: "",
+  longDescription: "",
   basePrice: "0",
+  basePriceMethod: "unit",
+  cogsPrice: "0",
+  cogsPriceMethod: "unit",
   categorySlug: "vapes",
   pricingGroupSlug: "",
   active: true
@@ -86,6 +95,13 @@ const normalizeVariationList = (entries: string[]): ProductVariation[] => {
   }
   return variations;
 };
+
+const roundUnitPrice = (value: number): number => Math.round((value + Number.EPSILON) * 1000) / 1000;
+
+const roundWeightedPrice = (value: number): number => Math.round(value);
+
+const formatDraftPrice = (value: number, mode: "unit" | "weighted"): string =>
+  mode === "weighted" ? roundWeightedPrice(value).toString() : roundUnitPrice(value).toFixed(3);
 
 const normalizeTagList = (entries: string[]): string[] => {
   const seen = new Set<string>();
@@ -136,6 +152,227 @@ const formatOrderPlacedTime = (value: string): string => {
 
   const day = date.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
   return `${day} at ${time}`;
+};
+
+const formatProductTimestamp = (value?: string | null): string => {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  });
+};
+
+const formatProductMoney = (value: number | undefined): string => `$${Number(value ?? 0).toFixed(3)}`;
+
+const formatProductNumber = (value: number | undefined): string => Number(value ?? 0).toFixed(3);
+
+const truncateProductCell = (value: string, max = 72): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return "—";
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed.slice(0, max)}…`;
+};
+
+type ProductInlineColumn =
+  | "name"
+  | "sku"
+  | "short_description"
+  | "long_description"
+  | "base_price"
+  | "cogs_per_unit"
+  | "variations"
+  | "category_id"
+  | "pricing_group_id"
+  | "tags"
+  | "active";
+
+const getProductCellEditValue = (product: Product, column: ProductInlineColumn): string => {
+  switch (column) {
+    case "name":
+      return product.name;
+    case "sku":
+      return product.sku ?? "";
+    case "short_description":
+      return product.short_description;
+    case "long_description":
+      return product.long_description;
+    case "base_price":
+      return roundUnitPrice(Number(product.base_price)).toFixed(3);
+    case "cogs_per_unit":
+      return roundUnitPrice(Number(product.cogs_per_unit ?? 0)).toFixed(3);
+    case "variations":
+      return (product.variations ?? []).map((variation) => variation.name).join(", ");
+    case "category_id":
+      return product.category_id;
+    case "pricing_group_id":
+      return product.pricing_group_id ?? "";
+    case "tags":
+      return (product.tags ?? []).join(", ");
+    case "active":
+      return product.active ? "true" : "false";
+    default:
+      return "";
+  }
+};
+
+const parseInlineNumber = (rawValue: string, label: string): number => {
+  const parsed = Number(rawValue.trim().replace(/^\$/, ""));
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${label} must be a non-negative number.`);
+  }
+  return roundUnitPrice(parsed);
+};
+
+const buildProductInlinePatch = (column: ProductInlineColumn, rawValue: string): Record<string, unknown> => {
+  const trimmed = rawValue.trim();
+  switch (column) {
+    case "name":
+      if (trimmed.length < 2) throw new Error("Product name must be at least 2 characters.");
+      return { name: trimmed };
+    case "sku":
+      if (trimmed && trimmed.length < 2) throw new Error("SKU must be at least 2 characters.");
+      return { sku: trimmed || undefined };
+    case "short_description":
+      return { shortDescription: rawValue };
+    case "long_description":
+      return { longDescription: rawValue };
+    case "base_price":
+      return { basePrice: parseInlineNumber(rawValue, "Base price") };
+    case "cogs_per_unit":
+      return { cogsPerUnit: parseInlineNumber(rawValue, "COGS") };
+    case "variations":
+      return {
+        variations: normalizeVariationList(
+          trimmed
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter(Boolean)
+        )
+      };
+    case "category_id":
+      if (trimmed.length < 2) throw new Error("Category ID must be at least 2 characters.");
+      return { categorySlug: trimmed };
+    case "pricing_group_id":
+      return { pricingGroupSlug: trimmed || null };
+    case "tags":
+      return {
+        tags: normalizeTagList(
+          trimmed
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter(Boolean)
+        )
+      };
+    case "active": {
+      const normalized = trimmed.toLowerCase();
+      if (["true", "1", "yes", "active"].includes(normalized)) return { active: true };
+      if (["false", "0", "no", "inactive"].includes(normalized)) return { active: false };
+      throw new Error('Active must be "true" or "false".');
+    }
+    default:
+      return {};
+  }
+};
+
+const productInlineCellKey = (productId: string, column: string): string => `${productId}:${column}`;
+
+type PromoInlineColumn =
+  | "code"
+  | "description"
+  | "discount_type"
+  | "discount_value"
+  | "min_subtotal"
+  | "max_discount"
+  | "usage_limit"
+  | "active";
+
+const promoInlineCellKey = (promoId: string, column: string): string => `${promoId}:${column}`;
+
+const formatPromoDiscountValue = (promo: PromoCode): string =>
+  promo.discount_type === "percent"
+    ? `${Number(promo.discount_value).toFixed(2)}%`
+    : `$${Number(promo.discount_value).toFixed(2)}`;
+
+const getPromoCellEditValue = (promo: PromoCode, column: PromoInlineColumn): string => {
+  switch (column) {
+    case "code":
+      return promo.code;
+    case "description":
+      return promo.description ?? "";
+    case "discount_type":
+      return promo.discount_type;
+    case "discount_value":
+      return Number(promo.discount_value).toFixed(2);
+    case "min_subtotal":
+      return Number(promo.min_subtotal).toFixed(2);
+    case "max_discount":
+      return promo.max_discount == null ? "" : Number(promo.max_discount).toFixed(2);
+    case "usage_limit":
+      return promo.usage_limit == null ? "" : String(promo.usage_limit);
+    case "active":
+      return promo.active ? "true" : "false";
+    default:
+      return "";
+  }
+};
+
+const buildPromoInlinePatch = (column: PromoInlineColumn, rawValue: string): Record<string, unknown> => {
+  const trimmed = rawValue.trim();
+  switch (column) {
+    case "code":
+      if (trimmed.length < 2) throw new Error("Promo code must be at least 2 characters.");
+      return { code: trimmed };
+    case "description":
+      return { description: rawValue.trim() || null };
+    case "discount_type":
+      if (trimmed !== "percent" && trimmed !== "fixed") {
+        throw new Error('Discount type must be "percent" or "fixed".');
+      }
+      return { discountType: trimmed };
+    case "discount_value": {
+      const parsed = Number(trimmed.replace(/^\$/, "").replace(/%$/, ""));
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        throw new Error("Discount value must be greater than 0.");
+      }
+      return { discountValue: parsed };
+    }
+    case "min_subtotal": {
+      const parsed = Number(trimmed.replace(/^\$/, ""));
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        throw new Error("Minimum subtotal must be a non-negative number.");
+      }
+      return { minSubtotal: parsed };
+    }
+    case "max_discount": {
+      if (!trimmed) return { maxDiscount: null };
+      const parsed = Number(trimmed.replace(/^\$/, ""));
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        throw new Error("Max discount must be greater than 0.");
+      }
+      return { maxDiscount: parsed };
+    }
+    case "usage_limit": {
+      if (!trimmed) return { usageLimit: null };
+      const parsed = Number.parseInt(trimmed, 10);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        throw new Error("Usage limit must be a positive whole number.");
+      }
+      return { usageLimit: parsed };
+    }
+    case "active": {
+      const normalized = trimmed.toLowerCase();
+      if (["true", "1", "yes", "active"].includes(normalized)) return { active: true };
+      if (["false", "0", "no", "inactive"].includes(normalized)) return { active: false };
+      throw new Error('Active must be "true" or "false".');
+    }
+    default:
+      return {};
+  }
 };
 
 const getOrderPromoCode = (order: OrderRecord): string | null => {
@@ -192,6 +429,19 @@ export function App() {
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [productSearch, setProductSearch] = useState("");
   const [productCategoryFilter, setProductCategoryFilter] = useState("all");
+  const [productInlineEdit, setProductInlineEdit] = useState<{
+    productId: string;
+    column: ProductInlineColumn;
+    value: string;
+  } | null>(null);
+  const [productInlineSaving, setProductInlineSaving] = useState<string | null>(null);
+  const [productStarSaving, setProductStarSaving] = useState<string | null>(null);
+  const [promoInlineEdit, setPromoInlineEdit] = useState<{
+    promoId: string;
+    column: PromoInlineColumn;
+    value: string;
+  } | null>(null);
+  const [promoInlineSaving, setPromoInlineSaving] = useState<string | null>(null);
   const [promoSearch, setPromoSearch] = useState("");
   const [orderSearch, setOrderSearch] = useState("");
   const [orderStatusFilter, setOrderStatusFilter] = useState<"all" | OrderRecord["status"]>("all");
@@ -206,6 +456,7 @@ export function App() {
   const [tagInputValue, setTagInputValue] = useState("");
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
   const [productImages, setProductImages] = useState<ProductImage[]>([]);
+  const [pendingProductImages, setPendingProductImages] = useState<PendingProductImage[]>([]);
   const [isUploadingImages, setIsUploadingImages] = useState(false);
   const [isDragOverImageZone, setIsDragOverImageZone] = useState(false);
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
@@ -354,12 +605,20 @@ export function App() {
     setStatus("Logged out");
   };
 
+  const clearPendingProductImages = (images: PendingProductImage[] = pendingProductImages) => {
+    for (const image of images) {
+      URL.revokeObjectURL(image.previewUrl);
+    }
+    setPendingProductImages([]);
+  };
+
   const openCreateProductModal = () => {
     setEditingProductId(null);
     setProductDraft(EMPTY_PRODUCT_DRAFT);
     setProductVariationsDraft([]);
     setProductTagsDraft([]);
     setProductImages([]);
+    clearPendingProductImages();
     setVariationInputValue("");
     setTagInputValue("");
     setActiveAddModal("product");
@@ -379,14 +638,19 @@ export function App() {
     setProductDraft({
       sku: product.sku ?? "",
       name: product.name,
-      description: product.description ?? "",
-      basePrice: Number(product.base_price).toString(),
+      shortDescription: product.short_description ?? "",
+      longDescription: product.long_description ?? "",
+      basePrice: roundUnitPrice(Number(product.base_price)).toFixed(3),
+      basePriceMethod: "unit",
+      cogsPrice: roundUnitPrice(Number(product.cogs_per_unit ?? 0)).toFixed(3),
+      cogsPriceMethod: "unit",
       categorySlug: product.category_slug,
       pricingGroupSlug: product.pricing_group_slug ?? "",
       active: product.active
     });
     setProductVariationsDraft(normalizeVariationList((product.variations ?? []).map((variation) => variation.name)));
     setProductTagsDraft(normalizeTagList(product.tags ?? []));
+    clearPendingProductImages();
     await loadProductImages(product.id);
     setVariationInputValue("");
     setTagInputValue("");
@@ -413,6 +677,82 @@ export function App() {
 
   const removeProductTag = (tagToRemove: string) => {
     setProductTagsDraft((current) => current.filter((tag) => tag !== tagToRemove));
+  };
+
+  const convertDraftValueBetweenModes = (
+    rawValue: string,
+    currentMode: "unit" | "weighted",
+    nextMode: "unit" | "weighted"
+  ): string => {
+    const numericValue = Number(rawValue);
+    const safeValue = Number.isFinite(numericValue) ? numericValue : 0;
+    if (currentMode === nextMode) return formatDraftPrice(safeValue, nextMode);
+    const converted = currentMode === "unit" ? safeValue * 454 : safeValue / 454;
+    return formatDraftPrice(converted, nextMode);
+  };
+
+  const addPendingProductImages = (files: File[]) => {
+    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length === 0) return;
+    setPendingProductImages((current) => {
+      const shouldSetPrimary = current.length === 0;
+      const added = imageFiles.map((file, index) => ({
+        id: crypto.randomUUID(),
+        file,
+        previewUrl: URL.createObjectURL(file),
+        isPrimary: shouldSetPrimary && index === 0
+      }));
+      return [...current, ...added];
+    });
+  };
+
+  const removePendingProductImage = (imageId: string) => {
+    setPendingProductImages((current) => {
+      const target = current.find((image) => image.id === imageId);
+      if (target) URL.revokeObjectURL(target.previewUrl);
+      const remaining = current.filter((image) => image.id !== imageId);
+      if (remaining.length > 0 && !remaining.some((image) => image.isPrimary)) {
+        remaining[0] = { ...remaining[0], isPrimary: true };
+      }
+      return remaining;
+    });
+  };
+
+  const setPendingImageAsPrimary = (imageId: string) => {
+    setPendingProductImages((current) =>
+      current.map((image) => ({ ...image, isPrimary: image.id === imageId }))
+    );
+  };
+
+  const handleProductImageFiles = (files: File[]) => {
+    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length === 0) return;
+    if (editingProductId) {
+      void uploadProductImages(imageFiles);
+      return;
+    }
+    addPendingProductImages(imageFiles);
+  };
+
+  const uploadPendingImagesToProduct = async (productId: string, pending: PendingProductImage[]) => {
+    if (pending.length === 0) return;
+    const formData = new FormData();
+    for (const image of pending) {
+      formData.append("images", image.file);
+    }
+    const result = await client.requestFormData<{ images: ProductImage[] }>(
+      `/admin/products/${productId}/images`,
+      "POST",
+      formData
+    );
+    const primaryIndex = pending.findIndex((image) => image.isPrimary);
+    const uploadedPrimary = primaryIndex >= 0 ? result.images[primaryIndex] : undefined;
+    if (uploadedPrimary && !uploadedPrimary.is_primary) {
+      await client.request<{ images: ProductImage[] }>(
+        `/admin/products/${productId}/images/${uploadedPrimary.id}/primary`,
+        "PATCH"
+      );
+    }
   };
 
   const uploadProductImages = async (files: File[]) => {
@@ -472,16 +812,58 @@ export function App() {
     }
   };
 
+  const closeProductModal = () => {
+    setEditingProductId(null);
+    setVariationInputValue("");
+    setTagInputValue("");
+    setProductImages([]);
+    clearPendingProductImages();
+    setProductVariationsDraft([]);
+    setProductTagsDraft([]);
+    setProductDraft(EMPTY_PRODUCT_DRAFT);
+    setActiveAddModal(null);
+  };
+
+  const deleteProduct = async () => {
+    if (!editingProductId) return;
+    const name = productDraft.name.trim() || editingProductId;
+    if (!window.confirm(`Delete product "${name}"? This cannot be undone.`)) return;
+    setIsBusy(true);
+    setError(null);
+    try {
+      await client.request(`/admin/products/${editingProductId}`, "DELETE");
+      setProducts((current) => current.filter((entry) => entry.id !== editingProductId));
+      closeProductModal();
+      await loadAll();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   const saveProduct = async (event: FormEvent) => {
     event.preventDefault();
     setIsBusy(true);
     setError(null);
     try {
+      const toUnitValue = (rawValue: string, method: "unit" | "weighted", label: string): number => {
+        const parsed = Number(rawValue);
+        if (!Number.isFinite(parsed) || parsed < 0) {
+          throw new Error(`${label} must be a non-negative number.`);
+        }
+        const unitValue = method === "weighted" ? roundWeightedPrice(parsed) / 454 : roundUnitPrice(parsed);
+        return roundUnitPrice(unitValue);
+      };
+      const basePrice = toUnitValue(productDraft.basePrice, productDraft.basePriceMethod, "Base price");
+      const cogsPerUnit = toUnitValue(productDraft.cogsPrice, productDraft.cogsPriceMethod, "COGS");
       const payload = {
         sku: productDraft.sku || undefined,
         name: productDraft.name,
-        description: productDraft.description,
-        basePrice: Number(productDraft.basePrice),
+        shortDescription: productDraft.shortDescription,
+        longDescription: productDraft.longDescription,
+        basePrice,
+        cogsPerUnit,
         categorySlug: productDraft.categorySlug,
         pricingGroupSlug: productDraft.pricingGroupSlug || null,
         variations: productVariationsDraft,
@@ -492,7 +874,17 @@ export function App() {
       if (editingProductId) {
         await client.request<{ product: Product }>(`/admin/products/${editingProductId}`, "PATCH", payload);
       } else {
-        await client.request<{ product: Product }>("/admin/products", "POST", payload);
+        const pendingImagesToUpload = [...pendingProductImages];
+        const result = await client.request<{ product: Product }>("/admin/products", "POST", payload);
+        if (pendingImagesToUpload.length > 0) {
+          setIsUploadingImages(true);
+          try {
+            await uploadPendingImagesToProduct(result.product.id, pendingImagesToUpload);
+          } finally {
+            setIsUploadingImages(false);
+          }
+        }
+        clearPendingProductImages(pendingImagesToUpload);
       }
 
       setEditingProductId(null);
@@ -500,10 +892,156 @@ export function App() {
       setProductVariationsDraft([]);
       setProductTagsDraft([]);
       setProductImages([]);
+      setPendingProductImages([]);
       setVariationInputValue("");
       setTagInputValue("");
       setActiveAddModal(null);
       await loadAll();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const startProductInlineEdit = (product: Product, column: ProductInlineColumn) => {
+    setProductInlineEdit({
+      productId: product.id,
+      column,
+      value: getProductCellEditValue(product, column)
+    });
+  };
+
+  const cancelProductInlineEdit = () => {
+    setProductInlineEdit(null);
+  };
+
+  const commitProductInlineEdit = async () => {
+    if (!productInlineEdit) return;
+    const product = products.find((entry) => entry.id === productInlineEdit.productId);
+    if (!product) {
+      setProductInlineEdit(null);
+      return;
+    }
+
+    const originalValue = getProductCellEditValue(product, productInlineEdit.column);
+    if (productInlineEdit.value === originalValue) {
+      setProductInlineEdit(null);
+      return;
+    }
+
+    await saveProductInlineField(product, productInlineEdit.column, productInlineEdit.value);
+    setProductInlineEdit(null);
+  };
+
+  const saveProductInlineField = async (
+    product: Product,
+    column: ProductInlineColumn,
+    rawValue: string
+  ): Promise<boolean> => {
+    const originalValue = getProductCellEditValue(product, column);
+    if (rawValue === originalValue) return true;
+
+    const cellKey = productInlineCellKey(product.id, column);
+    setProductInlineSaving(cellKey);
+    setError(null);
+    try {
+      const patch = buildProductInlinePatch(column, rawValue);
+      const result = await client.request<{ product: Product }>(`/admin/products/${product.id}`, "PATCH", patch);
+      setProducts((current) => current.map((entry) => (entry.id === product.id ? result.product : entry)));
+      return true;
+    } catch (err) {
+      setError((err as Error).message);
+      return false;
+    } finally {
+      setProductInlineSaving(null);
+    }
+  };
+
+  const handleProductSelectFieldChange = async (
+    product: Product,
+    column: ProductInlineColumn,
+    value: string
+  ) => {
+    const ok = await saveProductInlineField(product, column, value);
+    if (ok) cancelProductInlineEdit();
+  };
+
+  const toggleProductStar = async (product: Product) => {
+    const nextStarred = !product.is_starred;
+    setProductStarSaving(product.id);
+    setError(null);
+    try {
+      const result = await client.request<{ product: Product }>(`/admin/products/${product.id}`, "PATCH", {
+        isStarred: nextStarred
+      });
+      setProducts((current) => current.map((entry) => (entry.id === product.id ? result.product : entry)));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setProductStarSaving(null);
+    }
+  };
+
+  const startPromoInlineEdit = (promo: PromoCode, column: PromoInlineColumn) => {
+    setPromoInlineEdit({
+      promoId: promo.id,
+      column,
+      value: getPromoCellEditValue(promo, column)
+    });
+  };
+
+  const cancelPromoInlineEdit = () => {
+    setPromoInlineEdit(null);
+  };
+
+  const savePromoInlineField = async (
+    promo: PromoCode,
+    column: PromoInlineColumn,
+    rawValue: string
+  ): Promise<boolean> => {
+    const originalValue = getPromoCellEditValue(promo, column);
+    if (rawValue === originalValue) return true;
+
+    const cellKey = promoInlineCellKey(promo.id, column);
+    setPromoInlineSaving(cellKey);
+    setError(null);
+    try {
+      const patch = buildPromoInlinePatch(column, rawValue);
+      const result = await client.request<{ promo: PromoCode }>(`/admin/promos/${promo.id}`, "PATCH", patch);
+      setPromos((current) => current.map((entry) => (entry.id === promo.id ? result.promo : entry)));
+      return true;
+    } catch (err) {
+      setError((err as Error).message);
+      return false;
+    } finally {
+      setPromoInlineSaving(null);
+    }
+  };
+
+  const commitPromoInlineEdit = async () => {
+    if (!promoInlineEdit) return;
+    const promo = promos.find((entry) => entry.id === promoInlineEdit.promoId);
+    if (!promo) {
+      setPromoInlineEdit(null);
+      return;
+    }
+    await savePromoInlineField(promo, promoInlineEdit.column, promoInlineEdit.value);
+    setPromoInlineEdit(null);
+  };
+
+  const handlePromoSelectFieldChange = async (promo: PromoCode, column: PromoInlineColumn, value: string) => {
+    const ok = await savePromoInlineField(promo, column, value);
+    if (ok) cancelPromoInlineEdit();
+  };
+
+  const deletePromo = async (promo: PromoCode) => {
+    if (!window.confirm(`Delete promo code "${promo.code}"? This cannot be undone.`)) return;
+    setIsBusy(true);
+    setError(null);
+    try {
+      await client.request(`/admin/promos/${promo.id}`, "DELETE");
+      setPromos((current) => current.filter((entry) => entry.id !== promo.id));
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -911,6 +1449,8 @@ export function App() {
     return (
       product.id.toLowerCase().includes(search) ||
       product.name.toLowerCase().includes(search) ||
+      product.short_description.toLowerCase().includes(search) ||
+      product.long_description.toLowerCase().includes(search) ||
       product.category_name.toLowerCase().includes(search) ||
       product.category_slug.toLowerCase().includes(search) ||
       (product.pricing_group_name ?? "").toLowerCase().includes(search) ||
@@ -923,7 +1463,11 @@ export function App() {
   const promoRows = promos.filter((promo) => {
     const search = promoSearch.trim().toLowerCase();
     if (!search) return true;
-    return promo.code.toLowerCase().includes(search) || promo.id.toLowerCase().includes(search);
+    return (
+      promo.code.toLowerCase().includes(search) ||
+      promo.id.toLowerCase().includes(search) ||
+      (promo.description ?? "").toLowerCase().includes(search)
+    );
   });
 
   const dateFilteredOrders = orders.filter((order) => {
@@ -1144,18 +1688,26 @@ export function App() {
           </div>
         </header>
 
-        <section className="hero card">
-          <div>
-            <h2>Admin Dashboard</h2>
-            <p className="status">Manage catalog, promos, pricing tiers, and incoming orders from one place.</p>
+        <div className="dashboard-summary">
+          <h2 className="dashboard-summary-title">Admin Dashboard</h2>
+          <div className="dashboard-summary-stats">
+            <div className="dashboard-stat dashboard-stat-orders">
+              <strong>{metrics?.totalOrders ?? orders.length}</strong>
+              <span>Total Orders</span>
+            </div>
+            <div className="dashboard-stat dashboard-stat-pending">
+              <strong>{metrics?.pendingOrders ?? 0}</strong>
+              <span>Pending</span>
+            </div>
+            <div className="dashboard-stat dashboard-stat-products">
+              <strong>{products.filter((p) => p.active).length}</strong>
+              <span>Active Products</span>
+            </div>
+            <div className="dashboard-stat dashboard-stat-promos">
+              <strong>{promos.filter((promo) => promo.active).length}</strong>
+              <span>Active Promos</span>
+            </div>
           </div>
-        </section>
-
-        <div className="kpi-grid">
-          <KpiCard label="Total Orders" value={metrics?.totalOrders ?? orders.length} />
-          <KpiCard label="Pending Orders" value={metrics?.pendingOrders ?? 0} />
-          <KpiCard label="Active Products" value={products.filter((p) => p.active).length} />
-          <KpiCard label="Active Promos" value={promos.filter((promo) => promo.active).length} />
         </div>
 
         <p className={`status ${error ? "error" : ""}`}>{error ?? status}</p>
@@ -1179,9 +1731,15 @@ export function App() {
                 </div>
 
                 {adminTab === "products" && (
-                  <div className="card">
+                  <div className="card product-management-card">
                   <div className="section-header">
-                    <h3>Product Management</h3>
+                    <div>
+                      <h3>Product Management</h3>
+                      <p className="muted product-table-hint">
+                        Double-click editable cells to update inline. Category, pricing group, and status open a
+                        dropdown on double-click.
+                      </p>
+                    </div>
                     <div className="section-actions">
                       <select
                         className="small-action-btn"
@@ -1206,101 +1764,71 @@ export function App() {
                       </button>
                     </div>
                   </div>
+                  <div className="table-scroll-wrap product-table-scroll">
                   <table className="data-table product-table">
                     <thead>
                       <tr>
-                        <th className="column-edit" aria-label="Edit product" />
-                        <th>Image</th>
-                        <th>Product</th>
-                        <th>Category</th>
-                        <th>Pricing Group</th>
-                        <th className="column-tags">Tags</th>
-                        <th className="column-variations">Variations</th>
-                        <th>Avg Qty</th>
-                        <th>Avg Discount / Unit</th>
-                        <th>Avg Profit / Unit</th>
-                        <th>Price</th>
-                        <th>Status</th>
+                        <th className="sticky-col-star product-col-static" aria-label="Starred" />
+                        <th className="sticky-col-image product-col-static">Image</th>
+                        <th className="sticky-col-product product-col-editable">Product</th>
+                        <th className="product-col-static">ID</th>
+                        <th className="product-col-editable">SKU</th>
+                        <th className="product-col-editable">Short Description</th>
+                        <th className="product-col-editable">Long Description</th>
+                        <th className="product-col-editable">Base Price</th>
+                        <th className="product-col-editable">COGS / Unit</th>
+                        <th className="product-col-static">Avg Order Qty</th>
+                        <th className="product-col-static">Avg Discount / Unit</th>
+                        <th className="product-col-static">Avg Profit / Unit</th>
+                        <th className="product-col-editable">Variations</th>
+                        <th className="product-col-editable">Category ID</th>
+                        <th className="product-col-editable">Pricing Group ID</th>
+                        <th className="product-col-editable">Tags</th>
+                        <th className="product-col-editable">Active</th>
+                        <th className="product-col-static">Created At</th>
+                        <th className="product-col-static">Updated At</th>
+                        <th className="column-edit sticky-col-edit product-col-static" aria-label="Edit product" />
                       </tr>
                     </thead>
                     <tbody>
                       {productRows.map((p) => (
-                        <tr key={p.id}>
-                          <td className="column-edit">
-                            <button
-                              type="button"
-                              className="icon-edit-btn"
-                              aria-label={`Edit ${p.name}`}
-                              onClick={() => void openEditProductModal(p)}
-                            >
-                              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                                <path d="M4 20h4l10-10-4-4L4 16v4zm12.7-13.3 1.6-1.6a1 1 0 0 1 1.4 0l1.3 1.3a1 1 0 0 1 0 1.4L19.4 9l-2.7-2.3z" />
-                              </svg>
-                            </button>
-                          </td>
-                          <td>
-                            {p.image_url ? (
-                              <img className="product-thumb" src={p.image_url} alt={p.name} />
-                            ) : (
-                              <div className="product-thumb product-thumb-empty">No image</div>
-                            )}
-                          </td>
-                          <td>
-                            <strong>{p.name}</strong>
-                            <div className="muted">{p.id}</div>
-                          </td>
-                          <td>
-                            {p.category_name}
-                            <div className="muted">{p.category_slug}</div>
-                          </td>
-                          <td>
-                            {p.pricing_group_name ?? p.pricing_group_slug ?? "No volume discount"}
-                            <div className="muted">{p.pricing_group_slug ?? "none"}</div>
-                          </td>
-                          <td className="column-variations">
-                            <div className="product-tag-tags">
-                              {(p.tags ?? []).length > 0 ? (
-                                (p.tags ?? []).map((tag) => (
-                                  <span key={`${p.id}-tag-${tag}`} className="product-tag-pill">
-                                    {tag}
-                                  </span>
-                                ))
-                              ) : (
-                                <span className="product-tag-pill-empty">No tags</span>
-                              )}
-                            </div>
-                          </td>
-                          <td className="column-variations">
-                            <div className="product-variation-tags">
-                              {(p.variations ?? []).length > 0 ? (
-                                (p.variations ?? []).map((variation) => (
-                                  <span key={`${p.id}-${variation.id}`} className="product-variation-pill">
-                                    {variation.name}
-                                  </span>
-                                ))
-                              ) : (
-                                <span className="product-variation-pill-empty">No variations</span>
-                              )}
-                            </div>
-                          </td>
-                          <td>{Number(p.avg_order_quantity ?? 0).toFixed(2)}</td>
-                          <td>${Number(p.avg_discount_per_unit ?? 0).toFixed(2)}</td>
-                          <td>${Number(p.avg_profit_margin_per_unit ?? 0).toFixed(2)}</td>
-                          <td>${Number(p.base_price).toFixed(2)}</td>
-                          <td>
-                            <StatusBadge label={p.active ? "Active" : "Inactive"} tone={p.active ? "good" : "neutral"} />
-                          </td>
-                        </tr>
+                        <ProductTableRow
+                          key={p.id}
+                          product={p}
+                          categories={categories}
+                          pricingGroups={productGroups}
+                          inlineEdit={productInlineEdit}
+                          savingCellKey={productInlineSaving}
+                          onStartEdit={startProductInlineEdit}
+                          onEditChange={(value) =>
+                            setProductInlineEdit((current) => (current ? { ...current, value } : current))
+                          }
+                          onCommitEdit={() => void commitProductInlineEdit()}
+                          onCancelEdit={cancelProductInlineEdit}
+                          onSelectFieldChange={(column, value) =>
+                            void handleProductSelectFieldChange(p, column, value)
+                          }
+                          onOpenEditModal={() => void openEditProductModal(p)}
+                          onToggleStar={() => void toggleProductStar(p)}
+                          isStarSaving={productStarSaving === p.id}
+                        />
                       ))}
                     </tbody>
                   </table>
+                  </div>
                 </div>
                 )}
 
                 {adminTab === "promos" && (
-                  <div className="card">
+                  <div className="card promo-management-card">
                   <div className="section-header">
-                    <h3>Promo Code Management</h3>
+                    <div>
+                      <h3>Promo Code Management</h3>
+                      <p className="muted product-table-hint">
+                        Double-click editable cells to update inline. Type and status open a dropdown on
+                        double-click. Leave max discount or usage limit blank for no cap.
+                      </p>
+                    </div>
                     <div className="section-actions">
                       <input
                         className="search-input"
@@ -1313,38 +1841,46 @@ export function App() {
                       </button>
                     </div>
                   </div>
-                  <table className="data-table">
+                  <div className="table-scroll-wrap product-table-scroll">
+                  <table className="data-table product-table promo-table">
                     <thead>
                       <tr>
-                        <th>Code</th>
-                        <th>Type</th>
-                        <th>Value</th>
-                        <th>Min Subtotal</th>
-                        <th>Used</th>
-                        <th>Status</th>
+                        <th className="product-col-editable">Code</th>
+                        <th className="product-col-static">ID</th>
+                        <th className="product-col-editable">Description</th>
+                        <th className="product-col-editable">Type</th>
+                        <th className="product-col-editable">Value</th>
+                        <th className="product-col-editable">Min Subtotal</th>
+                        <th className="product-col-editable">Max Discount</th>
+                        <th className="product-col-editable">Usage Limit</th>
+                        <th className="product-col-static">Used</th>
+                        <th className="product-col-editable">Status</th>
+                        <th className="column-edit product-col-static" aria-label="Delete promo" />
                       </tr>
                     </thead>
                     <tbody>
                       {promoRows.map((promo) => (
-                        <tr key={promo.id}>
-                          <td>
-                            <strong>{promo.code}</strong>
-                            <div className="muted">{promo.id}</div>
-                          </td>
-                          <td>{promo.discount_type}</td>
-                          <td>{promo.discount_value}</td>
-                          <td>${promo.min_subtotal.toFixed(2)}</td>
-                          <td>
-                            {promo.used_count}
-                            {promo.usage_limit ? ` / ${promo.usage_limit}` : ""}
-                          </td>
-                          <td>
-                            <StatusBadge label={promo.active ? "Active" : "Inactive"} tone={promo.active ? "good" : "neutral"} />
-                          </td>
-                        </tr>
+                        <PromoTableRow
+                          key={promo.id}
+                          promo={promo}
+                          inlineEdit={promoInlineEdit}
+                          savingCellKey={promoInlineSaving}
+                          onStartEdit={startPromoInlineEdit}
+                          onEditChange={(value) =>
+                            setPromoInlineEdit((current) => (current ? { ...current, value } : current))
+                          }
+                          onCommitEdit={() => void commitPromoInlineEdit()}
+                          onCancelEdit={cancelPromoInlineEdit}
+                          onSelectFieldChange={(column, value) =>
+                            void handlePromoSelectFieldChange(promo, column, value)
+                          }
+                          onDelete={() => void deletePromo(promo)}
+                          isBusy={isBusy}
+                        />
                       ))}
                     </tbody>
                   </table>
+                  </div>
                 </div>
                 )}
 
@@ -1549,19 +2085,11 @@ export function App() {
                 <div className="card">
                   <h3>Overview Stats</h3>
                   <div className="metrics-grid">
-                    {Object.entries(metrics?.byStatus ?? {}).map(([statusName, count]) => (
+                    {(Object.entries(metrics?.byStatus ?? {}) as [OrderRecord["status"], number][])
+                      .filter(([statusName]) => statusName in STATUS_LABELS)
+                      .map(([statusName, count]) => (
                       <div className="metric-chip" key={statusName}>
-                        <span>
-                          {statusName === "pending"
-                            ? "Pending"
-                            : statusName === "out_for_delivery"
-                              ? "Out for Delivery"
-                              : statusName === "complete"
-                                ? "Complete"
-                                : statusName === "cancelled"
-                                  ? "Cancelled"
-                                  : statusName}
-                        </span>
+                        <span>{STATUS_LABELS[statusName]}</span>
                         <strong>{count}</strong>
                       </div>
                     ))}
@@ -1623,7 +2151,7 @@ export function App() {
                                 <th>Name</th>
                                 <th>Address</th>
                                 <th>Items</th>
-                                <th>Status</th>
+                                <th className="column-order-status">Status</th>
                                 <th>Payment</th>
                                 <th>Price</th>
                                 <th>Profit</th>
@@ -1645,7 +2173,7 @@ export function App() {
                                   </td>
                                   <td>{order.delivery_address}</td>
                                   <td>{renderOrderItemsSummary(order)}</td>
-                                  <td>
+                                  <td className="column-order-status">
                                     <select
                                       value={order.status}
                                       disabled={updatingOrderIds.includes(order.id)}
@@ -1692,28 +2220,123 @@ export function App() {
         <Modal
           open={activeAddModal === "product"}
           title={editingProductId ? "Edit Product" : "Add Product"}
-          onClose={() => {
-            setEditingProductId(null);
-            setVariationInputValue("");
-            setTagInputValue("");
-            setProductImages([]);
-            setProductVariationsDraft([]);
-            setProductTagsDraft([]);
-            setProductDraft(EMPTY_PRODUCT_DRAFT);
-            setActiveAddModal(null);
-          }}
+          size="wide"
+          onClose={closeProductModal}
         >
-          <form onSubmit={saveProduct}>
-            <Field label="SKU (optional)">
+          <form onSubmit={saveProduct} className="product-modal-form">
+            <Field label="SKU (optional)" className="product-modal-half-width">
               <input value={productDraft.sku} onChange={(e) => setProductDraft((p) => ({ ...p, sku: e.target.value }))} />
             </Field>
-            <Field label="Product name">
+            <Field label="Product name" className="product-modal-half-width">
               <input required value={productDraft.name} onChange={(e) => setProductDraft((p) => ({ ...p, name: e.target.value }))} />
             </Field>
-            <Field label="Base price">
-              <input type="number" step="0.01" value={productDraft.basePrice} onChange={(e) => setProductDraft((p) => ({ ...p, basePrice: e.target.value }))} />
+            <Field label="Price" className="product-modal-half-width">
+              <div className="variation-editor">
+                <div className="row">
+                  <label className="toggle-inline">
+                    <input
+                      type="checkbox"
+                      checked={productDraft.basePriceMethod === "unit"}
+                      onChange={() =>
+                        setProductDraft((p) => ({
+                          ...p,
+                          basePrice: convertDraftValueBetweenModes(p.basePrice, p.basePriceMethod, "unit"),
+                          basePriceMethod: "unit"
+                        }))
+                      }
+                    />
+                    <span>Unit Price</span>
+                  </label>
+                  <label className="toggle-inline">
+                    <input
+                      type="checkbox"
+                      checked={productDraft.basePriceMethod === "weighted"}
+                      onChange={() =>
+                        setProductDraft((p) => ({
+                          ...p,
+                          basePrice: convertDraftValueBetweenModes(p.basePrice, p.basePriceMethod, "weighted"),
+                          basePriceMethod: "weighted"
+                        }))
+                      }
+                    />
+                    <span>Weighted Price ($ / 454 units)</span>
+                  </label>
+                </div>
+                <input
+                  type="number"
+                  step={productDraft.basePriceMethod === "weighted" ? "1" : "0.001"}
+                  min="0"
+                  value={productDraft.basePrice}
+                  onChange={(e) => setProductDraft((p) => ({ ...p, basePrice: e.target.value }))}
+                  placeholder={
+                    productDraft.basePriceMethod === "weighted"
+                      ? "Enter $ per 454g"
+                      : "Enter unit price"
+                  }
+                />
+                <span className="muted">
+                  Stored unit price: $
+                  {roundUnitPrice(
+                    (Number(productDraft.basePrice) || 0) /
+                      (productDraft.basePriceMethod === "weighted" ? 454 : 1)
+                  ).toFixed(3)}
+                </span>
+              </div>
             </Field>
-            <Field label="Category">
+            <Field label="COGS" className="product-modal-half-width">
+              <div className="variation-editor">
+                <div className="row">
+                  <label className="toggle-inline">
+                    <input
+                      type="checkbox"
+                      checked={productDraft.cogsPriceMethod === "unit"}
+                      onChange={() =>
+                        setProductDraft((p) => ({
+                          ...p,
+                          cogsPrice: convertDraftValueBetweenModes(p.cogsPrice, p.cogsPriceMethod, "unit"),
+                          cogsPriceMethod: "unit"
+                        }))
+                      }
+                    />
+                    <span>Unit COGS</span>
+                  </label>
+                  <label className="toggle-inline">
+                    <input
+                      type="checkbox"
+                      checked={productDraft.cogsPriceMethod === "weighted"}
+                      onChange={() =>
+                        setProductDraft((p) => ({
+                          ...p,
+                          cogsPrice: convertDraftValueBetweenModes(p.cogsPrice, p.cogsPriceMethod, "weighted"),
+                          cogsPriceMethod: "weighted"
+                        }))
+                      }
+                    />
+                    <span>Weighted COGS ($ / 454 units)</span>
+                  </label>
+                </div>
+                <input
+                  type="number"
+                  step={productDraft.cogsPriceMethod === "weighted" ? "1" : "0.001"}
+                  min="0"
+                  value={productDraft.cogsPrice}
+                  onChange={(e) => setProductDraft((p) => ({ ...p, cogsPrice: e.target.value }))}
+                  placeholder={
+                    productDraft.cogsPriceMethod === "weighted"
+                      ? "Enter COGS per 454 units"
+                      : "Enter unit COGS"
+                  }
+                />
+                <span className="muted">
+                  Stored unit COGS: $
+                  {roundUnitPrice(
+                    (Number(productDraft.cogsPrice) || 0) /
+                      (productDraft.cogsPriceMethod === "weighted" ? 454 : 1)
+                  ).toFixed(3)}
+                </span>
+              </div>
+            </Field>
+            <Field label="Category" className="product-modal-half-width">
               <select value={productDraft.categorySlug} onChange={(e) => setProductDraft((p) => ({ ...p, categorySlug: e.target.value }))}>
                 {categories.map((category) => (
                   <option key={category.id} value={category.slug}>
@@ -1722,7 +2345,7 @@ export function App() {
                 ))}
               </select>
             </Field>
-            <Field label="Pricing group">
+            <Field label="Pricing group" className="product-modal-half-width">
               <select
                 value={productDraft.pricingGroupSlug}
                 onChange={(e) => setProductDraft((p) => ({ ...p, pricingGroupSlug: e.target.value }))}
@@ -1735,10 +2358,21 @@ export function App() {
                 ))}
               </select>
             </Field>
-            <Field label="Description">
-              <textarea value={productDraft.description} onChange={(e) => setProductDraft((p) => ({ ...p, description: e.target.value }))} />
+            <Field label="Short description" className="product-modal-full-width">
+              <textarea
+                value={productDraft.shortDescription}
+                onChange={(e) => setProductDraft((p) => ({ ...p, shortDescription: e.target.value }))}
+                placeholder="Brief summary for product cards and listings"
+              />
             </Field>
-            <Field label="Variations (optional)">
+            <Field label="Long description" className="product-modal-full-width">
+              <textarea
+                value={productDraft.longDescription}
+                onChange={(e) => setProductDraft((p) => ({ ...p, longDescription: e.target.value }))}
+                placeholder="Full product details"
+              />
+            </Field>
+            <Field label="Variations (optional)" className="product-modal-full-width">
               <div className="variation-editor">
                 <div className="variation-tags">
                   {productVariationsDraft.length > 0 ? (
@@ -1777,7 +2411,7 @@ export function App() {
                 </div>
               </div>
             </Field>
-            <Field label="Tags (optional)">
+            <Field label="Tags (optional)" className="product-modal-full-width">
               <div className="variation-editor">
                 <div className="variation-tags">
                   {productTagsDraft.length > 0 ? (
@@ -1816,46 +2450,43 @@ export function App() {
                 </div>
               </div>
             </Field>
-            <Field label="Product Images">
-              {editingProductId ? (
-                <div className="image-manager">
-                  <div
-                    className={`image-dropzone ${isDragOverImageZone ? "drag-over" : ""}`}
-                    onDragOver={(event) => {
-                      event.preventDefault();
-                      setIsDragOverImageZone(true);
-                    }}
-                    onDragLeave={(event) => {
-                      event.preventDefault();
-                      setIsDragOverImageZone(false);
-                    }}
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      const files = Array.from(event.dataTransfer.files).filter((file) =>
-                        file.type.startsWith("image/")
-                      );
-                      void uploadProductImages(files);
-                    }}
-                  >
-                    <p>Drag and drop images here</p>
-                    <label className="dropzone-button">
-                      <input
-                        type="file"
-                        multiple
-                        accept="image/*"
-                        onChange={(event) => {
-                          const files = Array.from(event.target.files ?? []);
-                          void uploadProductImages(files);
-                          event.currentTarget.value = "";
-                        }}
-                      />
-                      {isUploadingImages ? "Uploading..." : "Upload Images"}
-                    </label>
-                  </div>
+            <Field label="Product Images" className="product-modal-full-width">
+              <div className="image-manager">
+                <div
+                  className={`image-dropzone ${isDragOverImageZone ? "drag-over" : ""}`}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    setIsDragOverImageZone(true);
+                  }}
+                  onDragLeave={(event) => {
+                    event.preventDefault();
+                    setIsDragOverImageZone(false);
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setIsDragOverImageZone(false);
+                    handleProductImageFiles(Array.from(event.dataTransfer.files));
+                  }}
+                >
+                  <p>Drag and drop images here</p>
+                  <label className="dropzone-button">
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/*"
+                      onChange={(event) => {
+                        handleProductImageFiles(Array.from(event.target.files ?? []));
+                        event.currentTarget.value = "";
+                      }}
+                    />
+                    {isUploadingImages ? "Uploading..." : "Upload Images"}
+                  </label>
+                </div>
 
-                  <div className="image-section">
-                    <h4>Primary Image</h4>
-                    {productImages.find((image) => image.is_primary) ? (
+                <div className="image-section">
+                  <h4>Primary Image</h4>
+                  {editingProductId ? (
+                    productImages.find((image) => image.is_primary) ? (
                       <img
                         className="primary-image-preview"
                         src={productImages.find((image) => image.is_primary)?.image_url}
@@ -1863,12 +2494,22 @@ export function App() {
                       />
                     ) : (
                       <p className="muted">No primary image selected yet.</p>
-                    )}
-                  </div>
+                    )
+                  ) : pendingProductImages.find((image) => image.isPrimary) ? (
+                    <img
+                      className="primary-image-preview"
+                      src={pendingProductImages.find((image) => image.isPrimary)?.previewUrl}
+                      alt="Primary product preview"
+                    />
+                  ) : (
+                    <p className="muted">No primary image selected yet.</p>
+                  )}
+                </div>
 
-                  <div className="image-section">
-                    <h4>Gallery Images</h4>
-                    {productImages.length === 0 ? (
+                <div className="image-section">
+                  <h4>Gallery Images</h4>
+                  {editingProductId ? (
+                    productImages.length === 0 ? (
                       <p className="muted">No gallery images yet.</p>
                     ) : (
                       <div className="gallery-grid">
@@ -1896,14 +2537,47 @@ export function App() {
                           </div>
                         ))}
                       </div>
-                    )}
-                  </div>
+                    )
+                  ) : pendingProductImages.length === 0 ? (
+                    <p className="muted">No gallery images yet.</p>
+                  ) : (
+                    <div className="gallery-grid">
+                      {pendingProductImages.map((image) => (
+                        <div key={image.id} className="gallery-item">
+                          <img src={image.previewUrl} alt="Product gallery preview" />
+                          <div className="gallery-item-actions">
+                            <button
+                              type="button"
+                              className="small-action-btn secondary"
+                              disabled={image.isPrimary}
+                              onClick={() => setPendingImageAsPrimary(image.id)}
+                            >
+                              {image.isPrimary ? "Primary" : "Set Primary"}
+                            </button>
+                            <button
+                              type="button"
+                              className="small-action-btn danger secondary"
+                              disabled={isBusy}
+                              onClick={() => removePendingProductImage(image.id)}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              ) : (
-                <p className="muted">Save the product first, then upload primary and gallery images.</p>
-              )}
+              </div>
             </Field>
-            <div style={{ marginTop: 10 }} className="actions">
+            <div style={{ marginTop: 10 }} className="actions product-modal-full-width product-modal-actions">
+              {editingProductId ? (
+                <button type="button" className="danger secondary" disabled={isBusy} onClick={() => void deleteProduct()}>
+                  Delete Product
+                </button>
+              ) : (
+                <span aria-hidden="true" />
+              )}
               <button type="submit" disabled={isBusy}>
                 {editingProductId ? "Save Product" : "Add Product"}
               </button>
@@ -2438,12 +3112,453 @@ function RuleEditor({
   );
 }
 
-function KpiCard({ label, value }: { label: string; value: number }) {
+function ProductInlineSelectCell({
+  className,
+  display,
+  editValue,
+  options,
+  isEditing,
+  isSaving,
+  onStartEdit,
+  onSelect,
+  onCancel
+}: {
+  className?: string;
+  display: ReactNode;
+  editValue: string;
+  options: { value: string; label: string }[];
+  isEditing: boolean;
+  isSaving: boolean;
+  onStartEdit: () => void;
+  onSelect: (value: string) => void;
+  onCancel: () => void;
+}) {
+  const cellClassName = [
+    className,
+    "product-cell-editable",
+    isEditing ? "product-cell-editing product-cell-select" : "",
+    isSaving ? "product-cell-saving" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  if (isEditing) {
+    return (
+      <td className={cellClassName} onClick={(event) => event.stopPropagation()}>
+        <select
+          autoFocus
+          value={editValue}
+          disabled={isSaving}
+          onChange={(event) => onSelect(event.target.value)}
+          onBlur={() => onCancel()}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              onCancel();
+            }
+          }}
+        >
+          {options.map((option) => (
+            <option key={option.value || "__none__"} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </td>
+    );
+  }
+
   return (
-    <div className="kpi-card">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
+    <td
+      className={cellClassName}
+      title="Double-click to edit"
+      onDoubleClick={(event) => {
+        event.stopPropagation();
+        onStartEdit();
+      }}
+    >
+      {display}
+    </td>
+  );
+}
+
+function ProductEditableCell({
+  className,
+  display,
+  editValue,
+  isEditing,
+  isSaving,
+  editable = true,
+  multiline = false,
+  onStartEdit,
+  onChange,
+  onCommit,
+  onCancel
+}: {
+  className?: string;
+  display: ReactNode;
+  editValue: string;
+  isEditing: boolean;
+  isSaving: boolean;
+  editable?: boolean;
+  multiline?: boolean;
+  onStartEdit: () => void;
+  onChange: (value: string) => void;
+  onCommit: () => void;
+  onCancel: () => void;
+}) {
+  const cellClassName = [
+    className,
+    editable ? "product-cell-editable" : "product-cell-readonly",
+    isEditing ? "product-cell-editing" : "",
+    isSaving ? "product-cell-saving" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  if (!editable) {
+    return <td className={cellClassName}>{display}</td>;
+  }
+
+  if (isEditing) {
+    return (
+      <td className={cellClassName}>
+        {multiline ? (
+          <textarea
+            autoFocus
+            rows={3}
+            value={editValue}
+            onChange={(event) => onChange(event.target.value)}
+            onBlur={() => onCommit()}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                onCommit();
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                onCancel();
+              }
+            }}
+          />
+        ) : (
+          <input
+            autoFocus
+            value={editValue}
+            onChange={(event) => onChange(event.target.value)}
+            onBlur={() => onCommit()}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                onCommit();
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                onCancel();
+              }
+            }}
+          />
+        )}
+      </td>
+    );
+  }
+
+  return (
+    <td
+      className={cellClassName}
+      title="Double-click to edit"
+      onDoubleClick={(event) => {
+        event.stopPropagation();
+        onStartEdit();
+      }}
+    >
+      {display}
+    </td>
+  );
+}
+
+function ProductTableRow({
+  product,
+  categories,
+  pricingGroups,
+  inlineEdit,
+  savingCellKey,
+  onStartEdit,
+  onEditChange,
+  onCommitEdit,
+  onCancelEdit,
+  onSelectFieldChange,
+  onOpenEditModal,
+  onToggleStar,
+  isStarSaving
+}: {
+  product: Product;
+  categories: ProductCategory[];
+  pricingGroups: string[];
+  inlineEdit: { productId: string; column: ProductInlineColumn; value: string } | null;
+  savingCellKey: string | null;
+  onStartEdit: (product: Product, column: ProductInlineColumn) => void;
+  onEditChange: (value: string) => void;
+  onCommitEdit: () => void;
+  onCancelEdit: () => void;
+  onSelectFieldChange: (column: ProductInlineColumn, value: string) => void;
+  onOpenEditModal: () => void;
+  onToggleStar: () => void;
+  isStarSaving: boolean;
+}) {
+  const isEditingColumn = (column: ProductInlineColumn) =>
+    inlineEdit?.productId === product.id && inlineEdit.column === column;
+  const isSavingColumn = (column: ProductInlineColumn) =>
+    savingCellKey === productInlineCellKey(product.id, column);
+  const cellProps = (column: ProductInlineColumn) => ({
+    editValue: inlineEdit?.productId === product.id && inlineEdit.column === column ? inlineEdit.value : "",
+    isEditing: isEditingColumn(column),
+    isSaving: isSavingColumn(column),
+    onStartEdit: () => onStartEdit(product, column),
+    onChange: onEditChange,
+    onCommit: onCommitEdit,
+    onCancel: onCancelEdit
+  });
+
+  return (
+    <tr>
+      <td className="sticky-col-star product-cell-readonly">
+        <button
+          type="button"
+          className={`product-star-btn${product.is_starred ? " is-starred" : ""}`}
+          aria-label={product.is_starred ? `Unstar ${product.name}` : `Star ${product.name}`}
+          aria-pressed={product.is_starred}
+          disabled={isStarSaving}
+          onClick={onToggleStar}
+        >
+          {product.is_starred ? "★" : "☆"}
+        </button>
+      </td>
+      <td className="sticky-col-image product-cell-readonly">
+        {product.image_url ? (
+          <img className="product-thumb" src={product.image_url} alt={product.name} />
+        ) : (
+          <div className="product-thumb product-thumb-empty">No image</div>
+        )}
+      </td>
+      <ProductEditableCell
+        {...cellProps("name")}
+        className="sticky-col-product"
+        display={<strong>{product.name}</strong>}
+      />
+      <td className="product-cell-mono product-cell-readonly">{product.id}</td>
+      <ProductEditableCell
+        {...cellProps("sku")}
+        className="product-cell-mono"
+        display={product.sku ?? "—"}
+      />
+      <ProductEditableCell
+        {...cellProps("short_description")}
+        className="product-cell-clip"
+        multiline
+        display={truncateProductCell(product.short_description || "—", 96)}
+      />
+      <ProductEditableCell
+        {...cellProps("long_description")}
+        className="product-cell-clip column-long-description"
+        multiline
+        display={truncateProductCell(product.long_description || "—", 96)}
+      />
+      <ProductEditableCell {...cellProps("base_price")} display={formatProductMoney(product.base_price)} />
+      <ProductEditableCell {...cellProps("cogs_per_unit")} display={formatProductMoney(product.cogs_per_unit)} />
+      <td
+        className="product-cell-readonly product-cell-computed"
+        title="Calculated automatically from order history"
+      >
+        {formatProductNumber(product.avg_order_quantity)}
+      </td>
+      <td
+        className="product-cell-readonly product-cell-computed"
+        title="Calculated automatically from order history"
+      >
+        {formatProductMoney(product.avg_discount_per_unit)}
+      </td>
+      <td
+        className="product-cell-readonly product-cell-computed"
+        title="Calculated automatically from order history"
+      >
+        {formatProductMoney(product.avg_profit_margin_per_unit)}
+      </td>
+      <ProductEditableCell
+        {...cellProps("variations")}
+        className="column-variations"
+        display={
+          <div className="product-variation-tags">
+            {(product.variations ?? []).length > 0 ? (
+              (product.variations ?? []).map((variation) => (
+                <span key={`${product.id}-${variation.id}`} className="product-variation-pill">
+                  {variation.name}
+                </span>
+              ))
+            ) : (
+              <span className="product-variation-pill-empty">—</span>
+            )}
+          </div>
+        }
+      />
+      <ProductInlineSelectCell
+        className="product-cell-mono"
+        {...cellProps("category_id")}
+        display={product.category_id}
+        options={categories.map((category) => ({
+          value: category.slug,
+          label: `${category.name} (${category.slug})`
+        }))}
+        onSelect={(value) => onSelectFieldChange("category_id", value)}
+      />
+      <ProductInlineSelectCell
+        className="product-cell-mono"
+        {...cellProps("pricing_group_id")}
+        display={product.pricing_group_id ?? "—"}
+        options={[
+          { value: "", label: "No volume discount" },
+          ...Array.from(
+            new Set([
+              ...pricingGroups,
+              ...(product.pricing_group_id ? [product.pricing_group_id] : [])
+            ])
+          ).map((groupId) => ({ value: groupId, label: groupId }))
+        ]}
+        onSelect={(value) => onSelectFieldChange("pricing_group_id", value)}
+      />
+      <ProductEditableCell
+        {...cellProps("tags")}
+        className="column-tags"
+        display={
+          <div className="product-tag-tags">
+            {(product.tags ?? []).length > 0 ? (
+              (product.tags ?? []).map((tag) => (
+                <span key={`${product.id}-tag-${tag}`} className="product-tag-pill">
+                  {tag}
+                </span>
+              ))
+            ) : (
+              <span className="product-tag-pill-empty">—</span>
+            )}
+          </div>
+        }
+      />
+      <ProductInlineSelectCell
+        {...cellProps("active")}
+        display={
+          <StatusBadge label={product.active ? "Active" : "Inactive"} tone={product.active ? "good" : "neutral"} />
+        }
+        options={[
+          { value: "true", label: "Active" },
+          { value: "false", label: "Inactive" }
+        ]}
+        onSelect={(value) => onSelectFieldChange("active", value)}
+      />
+      <td className="product-cell-nowrap product-cell-readonly">{formatProductTimestamp(product.created_at)}</td>
+      <td className="product-cell-nowrap product-cell-readonly">{formatProductTimestamp(product.updated_at)}</td>
+      <td className="column-edit sticky-col-edit product-cell-readonly">
+        <button type="button" className="icon-edit-btn" aria-label={`Edit ${product.name}`} onClick={onOpenEditModal}>
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M4 20h4l10-10-4-4L4 16v4zm12.7-13.3 1.6-1.6a1 1 0 0 1 1.4 0l1.3 1.3a1 1 0 0 1 0 1.4L19.4 9l-2.7-2.3z" />
+          </svg>
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+function PromoTableRow({
+  promo,
+  inlineEdit,
+  savingCellKey,
+  onStartEdit,
+  onEditChange,
+  onCommitEdit,
+  onCancelEdit,
+  onSelectFieldChange,
+  onDelete,
+  isBusy
+}: {
+  promo: PromoCode;
+  inlineEdit: { promoId: string; column: PromoInlineColumn; value: string } | null;
+  savingCellKey: string | null;
+  onStartEdit: (promo: PromoCode, column: PromoInlineColumn) => void;
+  onEditChange: (value: string) => void;
+  onCommitEdit: () => void;
+  onCancelEdit: () => void;
+  onSelectFieldChange: (column: PromoInlineColumn, value: string) => void;
+  onDelete: () => void;
+  isBusy: boolean;
+}) {
+  const isEditingColumn = (column: PromoInlineColumn) =>
+    inlineEdit?.promoId === promo.id && inlineEdit.column === column;
+  const isSavingColumn = (column: PromoInlineColumn) => savingCellKey === promoInlineCellKey(promo.id, column);
+  const cellProps = (column: PromoInlineColumn) => ({
+    editValue: inlineEdit?.promoId === promo.id && inlineEdit.column === column ? inlineEdit.value : "",
+    isEditing: isEditingColumn(column),
+    isSaving: isSavingColumn(column),
+    onStartEdit: () => onStartEdit(promo, column),
+    onChange: onEditChange,
+    onCommit: onCommitEdit,
+    onCancel: onCancelEdit
+  });
+
+  return (
+    <tr>
+      <ProductEditableCell {...cellProps("code")} display={<strong>{promo.code}</strong>} />
+      <td className="product-cell-mono product-cell-readonly">{promo.id}</td>
+      <ProductEditableCell
+        {...cellProps("description")}
+        className="product-cell-clip"
+        multiline
+        display={truncateProductCell(promo.description || "—", 96)}
+      />
+      <ProductInlineSelectCell
+        {...cellProps("discount_type")}
+        display={promo.discount_type === "percent" ? "Percent" : "Fixed"}
+        options={[
+          { value: "percent", label: "Percent" },
+          { value: "fixed", label: "Fixed" }
+        ]}
+        onSelect={(value) => onSelectFieldChange("discount_type", value)}
+      />
+      <ProductEditableCell {...cellProps("discount_value")} display={formatPromoDiscountValue(promo)} />
+      <ProductEditableCell {...cellProps("min_subtotal")} display={`$${Number(promo.min_subtotal).toFixed(2)}`} />
+      <ProductEditableCell
+        {...cellProps("max_discount")}
+        display={promo.max_discount == null ? "—" : `$${Number(promo.max_discount).toFixed(2)}`}
+      />
+      <ProductEditableCell
+        {...cellProps("usage_limit")}
+        display={promo.usage_limit == null ? "Unlimited" : String(promo.usage_limit)}
+      />
+      <td className="product-cell-readonly">
+        {promo.used_count}
+        {promo.usage_limit ? ` / ${promo.usage_limit}` : ""}
+      </td>
+      <ProductInlineSelectCell
+        {...cellProps("active")}
+        display={
+          <StatusBadge label={promo.active ? "Active" : "Inactive"} tone={promo.active ? "good" : "neutral"} />
+        }
+        options={[
+          { value: "true", label: "Active" },
+          { value: "false", label: "Inactive" }
+        ]}
+        onSelect={(value) => onSelectFieldChange("active", value)}
+      />
+      <td className="column-edit product-cell-readonly">
+        <button
+          type="button"
+          className="icon-edit-btn icon-delete-btn"
+          aria-label={`Delete ${promo.code}`}
+          disabled={isBusy}
+          onClick={onDelete}
+        >
+          ×
+        </button>
+      </td>
+    </tr>
   );
 }
 
@@ -2451,9 +3566,9 @@ function StatusBadge({ label, tone }: { label: string; tone: "good" | "neutral" 
   return <span className={`status-badge ${tone}`}>{label}</span>;
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function Field({ label, children, className }: { label: string; children: ReactNode; className?: string }) {
   return (
-    <label className="field">
+    <label className={`field ${className ?? ""}`.trim()}>
       <span>{label}</span>
       {children}
     </label>
@@ -2471,12 +3586,14 @@ function Modal({
   title: string;
   onClose: () => void;
   children: ReactNode;
-  size?: "default" | "fullscreen";
+  size?: "default" | "wide" | "fullscreen";
 }) {
   if (!open) return null;
+  const sizeClass =
+    size === "fullscreen" ? "modal-card-fullscreen" : size === "wide" ? "modal-card-wide" : "";
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className={`modal-card ${size === "fullscreen" ? "modal-card-fullscreen" : ""}`} onClick={(event) => event.stopPropagation()}>
+      <div className={`modal-card ${sizeClass}`.trim()} onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <h4>{title}</h4>
           <button type="button" className="modal-close" onClick={onClose} aria-label="Close modal">

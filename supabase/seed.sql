@@ -189,12 +189,13 @@ on conflict (slug) do update set
   tiers = excluded.tiers,
   constraints = excluded.constraints;
 
-insert into products (id, sku, name, description, image_url, base_price, cogs_per_unit, category_id, pricing_group_id, active)
+insert into products (id, sku, name, short_description, long_description, image_url, base_price, cogs_per_unit, category_id, pricing_group_id, active)
 values
   (
     'VAPE-001',
     'VAPE-001',
     'Sample Disposable Vape',
+    'Sample vape product',
     'Sample vape product',
     null,
     35.00,
@@ -208,6 +209,7 @@ values
     'EDIB-001',
     'Sample Gummies',
     'Sample edible product',
+    'Sample edible product',
     null,
     20.00,
     8.00,
@@ -219,6 +221,7 @@ values
     'FLOW-001',
     'FLOW-001',
     'Sample Premium Flower',
+    'Sample flower product',
     'Sample flower product',
     null,
     10.00,
@@ -232,6 +235,7 @@ values
     'GEAR-001',
     'Top Cola Rolling Tray',
     'Metal rolling tray with raised edges.',
+    'Metal rolling tray with raised edges.',
     null,
     12.00,
     5.00,
@@ -243,6 +247,7 @@ values
     'GEAR-002',
     'GEAR-002',
     'Top Cola Grinder',
+    '4-piece aluminum grinder.',
     '4-piece aluminum grinder.',
     null,
     18.00,
@@ -256,6 +261,7 @@ values
     'GEAR-003',
     'Top Cola Glass Jar',
     'Airtight storage jar for flower.',
+    'Airtight storage jar for flower.',
     null,
     9.00,
     3.25,
@@ -268,6 +274,7 @@ values
     'CONC-001',
     'Live Resin - Citrus Dream 1g',
     'Potent live resin concentrate.',
+    'Potent live resin concentrate.',
     null,
     28.00,
     14.50,
@@ -279,6 +286,7 @@ values
     'CONC-002',
     'CONC-002',
     'Badder - Night Shift 1g',
+    'Whipped badder with smooth terpene profile.',
     'Whipped badder with smooth terpene profile.',
     null,
     30.00,

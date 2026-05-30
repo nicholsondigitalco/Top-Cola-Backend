@@ -33,17 +33,22 @@ export const OrderRequestSchema = z.object({
 export const ProductCreateSchema = z.object({
   sku: z.string().trim().min(2).max(40).optional(),
   name: z.string().trim().min(2).max(120),
-  description: z.string().trim().max(1000).default(""),
+  shortDescription: z.string().trim().max(280).default(""),
+  longDescription: z.string().trim().max(5000).default(""),
   imageUrl: z.string().url().optional(),
   basePrice: z.number().nonnegative(),
+  cogsPerUnit: z.number().nonnegative(),
   categorySlug: z.string().trim().min(2).max(80),
   pricingGroupSlug: z.string().trim().min(2).max(80).nullable().optional(),
   variations: z.array(ProductVariationSchema).max(50).optional(),
   tags: z.array(ProductTagSchema).max(50).optional(),
-  active: z.boolean().default(true)
+  active: z.boolean().default(true),
+  isStarred: z.boolean().optional()
 });
 
-export const ProductUpdateSchema = ProductCreateSchema.partial();
+export const ProductUpdateSchema = ProductCreateSchema.partial().extend({
+  imageUrl: z.union([z.string().url(), z.literal(""), z.null()]).optional()
+});
 
 export const CategoryCreateSchema = z.object({
   slug: z.string().trim().min(2).max(80),
@@ -67,7 +72,11 @@ export const PromoCreateSchema = z.object({
   description: z.string().trim().max(500).optional()
 });
 
-export const PromoUpdateSchema = PromoCreateSchema.partial();
+export const PromoUpdateSchema = PromoCreateSchema.partial().extend({
+  description: z.string().trim().max(500).nullable().optional(),
+  maxDiscount: z.number().positive().nullable().optional(),
+  usageLimit: z.number().int().positive().nullable().optional()
+});
 
 export const PricingRuleUpdateSchema = z.object({
   tiers: z.array(
@@ -104,7 +113,7 @@ export const AdminLoginSchema = z.object({
 });
 
 export const AdminOrderStatusSchema = z.object({
-  status: z.enum(["pending", "out_for_delivery", "complete", "cancelled"]),
+  status: z.enum(["pending", "complete", "cancelled"]),
   note: z.string().max(500).optional()
 });
 
@@ -117,7 +126,7 @@ export const AdminOrderEditSchema = z.object({
   paymentMethod: z.enum(["cash", "zelle"]),
   promoCode: z.string().trim().min(2).max(40).optional().nullable(),
   scheduledDeliveryTime: z.string().datetime().optional().nullable(),
-  status: z.enum(["pending", "out_for_delivery", "complete", "cancelled"]),
+  status: z.enum(["pending", "complete", "cancelled"]),
   customDiscount: z.number().nonnegative().default(0),
   note: z.string().max(500).optional(),
   items: z
