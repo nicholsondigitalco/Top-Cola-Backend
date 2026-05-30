@@ -2,9 +2,10 @@ import { Router } from "express";
 import multer from "multer";
 import { randomUUID } from "node:crypto";
 import {
+  authenticateAdminPassword,
   clearLoginFailures,
+  enforceAdminTier,
   enforceLoginRateLimit,
-  isValidAdminPassword,
   issueAdminToken,
   recordLoginFailure,
   requireAdminAuth
@@ -62,21 +63,22 @@ adminRouter.post("/admin/login", async (req, res, next) => {
     }
 
     const payload = AdminLoginSchema.parse(req.body);
-    const valid = await isValidAdminPassword(payload.password);
-    if (!valid) {
+    const role = await authenticateAdminPassword(payload.password);
+    if (!role) {
       recordLoginFailure(ip);
       res.status(401).json({ error: "Invalid credentials." });
       return;
     }
 
     clearLoginFailures(ip);
-    res.json({ token: issueAdminToken() });
+    res.json({ token: issueAdminToken(role), role });
   } catch (error) {
     next(error);
   }
 });
 
 adminRouter.use(requireAdminAuth);
+adminRouter.use(enforceAdminTier);
 
 adminRouter.get("/admin/products", async (_req, res, next) => {
   try {

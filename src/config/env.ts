@@ -8,7 +8,8 @@ const EnvSchema = z.object({
   PORT: z.coerce.number().int().positive().default(4000),
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
-  ADMIN_PASSWORD_HASH: z.string().min(20),
+  ADMIN_ORDERS_PASSWORD_HASH: z.string().min(20),
+  ADMIN_FULL_PASSWORD_HASH: z.string().min(20),
   ADMIN_TOKEN_SECRET: z.string().min(16),
   BREVO_API_KEY: z.string().min(1).optional()
 });

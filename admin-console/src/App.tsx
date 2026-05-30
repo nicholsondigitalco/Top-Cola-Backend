@@ -1,6 +1,15 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { BrowserRouter, NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { ApiClient } from "./api";
+import {
+  buildAnalyticsSummary,
+  buildChartAnalytics,
+  defaultAnalyticsEnd,
+  defaultAnalyticsStart,
+  exportOrdersReportPdf,
+  filterOrdersInRange,
+  getAnalyticsPeriodLabel
+} from "./analytics";
 import type {
   NotificationEmail,
   OrderDetailItem,
@@ -17,7 +26,7 @@ import type {
 } from "./types";
 
 const API_BASE_DEFAULT = "http://localhost:4000";
-const ADMIN_TOKEN_KEY = "top-cola-admin-token";
+type AdminRole = "orders" | "full";
 type AdminTab = "products" | "promos" | "rules" | "categories" | "settings";
 const ADMIN_TABS: { id: AdminTab; label: string }[] = [
   { id: "products", label: "Products" },
@@ -186,6 +195,14 @@ const formatProductTimestamp = (value?: string | null): string => {
 };
 
 const formatProductMoney = (value: number | undefined): string => `$${Number(value ?? 0).toFixed(3)}`;
+
+const formatOrderProfit = (profitDollars: number, orderTotal: number, role: AdminRole): string => {
+  if (role === "full") {
+    return `$${profitDollars.toFixed(2)}`;
+  }
+  if (orderTotal <= 0) return "0%";
+  return `${((profitDollars / orderTotal) * 100).toFixed(1)}%`;
+};
 
 const formatProductNumber = (value: number | undefined): string => Number(value ?? 0).toFixed(3);
 
@@ -419,6 +436,7 @@ export function App() {
   const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? API_BASE_DEFAULT;
   const [password, setPassword] = useState("");
   const [token, setToken] = useState<string | null>(null);
+  const [adminRole, setAdminRole] = useState<AdminRole | null>(null);
   const [status, setStatus] = useState("Sign in to continue");
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
@@ -457,6 +475,11 @@ export function App() {
   const [orderSearch, setOrderSearch] = useState("");
   const [orderStatusFilter, setOrderStatusFilter] = useState<"all" | OrderRecord["status"]>("all");
   const [orderDateFilter, setOrderDateFilter] = useState<OrderDateFilter>("today");
+  const [analyticsStartAt, setAnalyticsStartAt] = useState(defaultAnalyticsStart);
+  const [analyticsEndAt, setAnalyticsEndAt] = useState(defaultAnalyticsEnd);
+  const [analyticsDisplayMode, setAnalyticsDisplayMode] = useState<"table" | "graph">("graph");
+  const [analyticsGraphMetric, setAnalyticsGraphMetric] = useState<"orders" | "revenue">("revenue");
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [updatingOrderIds, setUpdatingOrderIds] = useState<string[]>([]);
   const [adminTab, setAdminTab] = useState<AdminTab>("products");
 
@@ -494,6 +517,7 @@ export function App() {
     savings: number;
     volumeDiscount: number;
     promoDiscount: number;
+    items: Array<{ product_id: string; line_total: number; quantity: number }>;
   } | null>(null);
 
   const [newPromo, setNewPromo] = useState({
@@ -528,6 +552,30 @@ export function App() {
       if (showError) {
         setError((err as Error).message);
       }
+    }
+  };
+
+  const loadOrdersData = async () => {
+    if (!token) return;
+    setIsBusy(true);
+    setStatus("Loading orders...");
+    setError(null);
+    try {
+      const [productsRes, ordersRes, metricsRes] = await Promise.all([
+        client.request<{ products: Product[] }>("/admin/products"),
+        client.request<{ orders: OrderRecord[] }>("/admin/orders"),
+        client.request<OrderMetrics>("/admin/metrics/orders")
+      ]);
+      setProducts(productsRes.products);
+      setOrders(ordersRes.orders);
+      setMetrics(metricsRes);
+      setLastSyncedAt(new Date().toISOString());
+      setStatus("Connected");
+    } catch (err) {
+      setError((err as Error).message);
+      setStatus("Failed to load orders");
+    } finally {
+      setIsBusy(false);
     }
   };
 
@@ -566,17 +614,29 @@ export function App() {
     }
   };
 
-  useEffect(() => {
-    localStorage.removeItem(ADMIN_TOKEN_KEY);
-    void loadAll();
-  }, [token]);
+  const reloadSessionData = async () => {
+    if (adminRole === "full") {
+      await loadAll();
+      return;
+    }
+    await loadOrdersData();
+  };
 
   useEffect(() => {
-    if (!token) return;
+    if (!token || !adminRole) return;
+    if (adminRole === "full") {
+      void loadAll();
+    } else {
+      void loadOrdersData();
+    }
+  }, [token, adminRole]);
+
+  useEffect(() => {
+    if (!token || adminRole !== "full") return;
     if (adminTab === "products" || adminTab === "categories") {
       void loadCategories();
     }
-  }, [token, adminTab]);
+  }, [token, adminRole, adminTab]);
 
   const login = async (event: FormEvent) => {
     event.preventDefault();
@@ -584,7 +644,10 @@ export function App() {
     setIsBusy(true);
     try {
       const publicClient = new ApiClient(apiBaseUrl, null);
-      const result = await publicClient.request<{ token: string }>("/admin/login", "POST", { password });
+      const result = await publicClient.request<{ token: string; role: AdminRole }>("/admin/login", "POST", {
+        password
+      });
+      setAdminRole(result.role);
       setToken(result.token);
       setPassword("");
       setStatus("Logged in");
@@ -598,6 +661,7 @@ export function App() {
 
   const logout = () => {
     setToken(null);
+    setAdminRole(null);
     setProducts([]);
     setCategories([]);
     setPromos([]);
@@ -1184,12 +1248,43 @@ export function App() {
     setError(null);
     try {
       await client.request(`/admin/orders/${orderId}/status`, "PATCH", { status: statusValue });
-      await loadAll();
+      await reloadSessionData();
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setUpdatingOrderIds((current) => current.filter((id) => id !== orderId));
       setIsBusy(false);
+    }
+  };
+
+  const runOrdersReport = () => {
+    if (!analyticsStartAt || !analyticsEndAt) {
+      setError("Select a start and end time for the report.");
+      return;
+    }
+    if (Number.isNaN(new Date(analyticsStartAt).getTime()) || Number.isNaN(new Date(analyticsEndAt).getTime())) {
+      setError("Start and end times must be valid.");
+      return;
+    }
+    if (analyticsOrders.length === 0) {
+      setError("No orders found in the selected time range.");
+      return;
+    }
+
+    setIsGeneratingReport(true);
+    setError(null);
+    try {
+      exportOrdersReportPdf({
+        orders: analyticsOrders,
+        startAt: analyticsStartAt,
+        endAt: analyticsEndAt,
+        summary: analyticsSummary
+      });
+      setStatus(`Exported ${analyticsOrders.length} orders to PDF.`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsGeneratingReport(false);
     }
   };
 
@@ -1337,7 +1432,7 @@ export function App() {
         items: payloadItems
       });
 
-      await loadAll();
+      await reloadSessionData();
       closeOrderEditor();
     } catch (err) {
       setError((err as Error).message);
@@ -1521,6 +1616,27 @@ export function App() {
     rows: filteredOrderRows.filter((order) => order.status === status)
   }));
   const pendingOrderCount = orders.filter((order) => order.status === "pending").length;
+  const analyticsOrders = useMemo(
+    () =>
+      [...filterOrdersInRange(orders, analyticsStartAt, analyticsEndAt)].sort(
+        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      ),
+    [orders, analyticsStartAt, analyticsEndAt]
+  );
+  const analyticsSummary = useMemo(() => buildAnalyticsSummary(analyticsOrders), [analyticsOrders]);
+  const analyticsChart = useMemo(
+    () => buildChartAnalytics(analyticsOrders, analyticsStartAt, analyticsEndAt),
+    [analyticsOrders, analyticsStartAt, analyticsEndAt]
+  );
+  const analyticsChartRows = analyticsChart.rows;
+  const analyticsGranularity = analyticsChart.granularity;
+  const analyticsGraphMax = useMemo(() => {
+    if (analyticsChartRows.length === 0) return 1;
+    if (analyticsGraphMetric === "orders") {
+      return Math.max(1, ...analyticsChartRows.map((row) => row.orderCount));
+    }
+    return Math.max(1, ...analyticsChartRows.map((row) => row.revenue));
+  }, [analyticsChartRows, analyticsGraphMetric]);
   const categoryByProductId = useMemo(
     () => new Map(products.map((product) => [product.id, product.category_slug])),
     [products]
@@ -1547,6 +1663,7 @@ export function App() {
         savings: number;
         volumeDiscount: number;
         promoDiscount: number;
+        items: Array<{ product_id: string; line_total: number; quantity: number }>;
       }>("/admin/pricing/quote", "POST", { items: normalizedItems, promoCode: orderEditor.promoCode || undefined })
       .then((quote) => {
         if (!cancelled) setOrderQuotePreview(quote);
@@ -1625,7 +1742,11 @@ export function App() {
     }
   }, [categories, productDraft.categorySlug]);
 
-  if (!token) {
+  const refreshData = () => {
+    void reloadSessionData();
+  };
+
+  if (!token || !adminRole) {
     return (
       <div className="auth-layout">
         <div className="auth-card">
@@ -1664,9 +1785,11 @@ export function App() {
             <h2>Admin Console</h2>
           </div>
           <nav className="site-nav">
-            <NavLink to="/admin" className={({ isActive }) => `nav-link ${isActive ? "active-link" : ""}`}>
-              Admin
-            </NavLink>
+            {adminRole === "full" && (
+              <NavLink to="/admin" className={({ isActive }) => `nav-link ${isActive ? "active-link" : ""}`}>
+                Admin
+              </NavLink>
+            )}
             <NavLink to="/orders" className={({ isActive }) => `nav-link ${isActive ? "active-link" : ""}`}>
               {({ isActive }) => (
                 <span className="orders-link-label">
@@ -1677,9 +1800,14 @@ export function App() {
                 </span>
               )}
             </NavLink>
+            {adminRole === "full" && (
+              <NavLink to="/analytics" className={({ isActive }) => `nav-link ${isActive ? "active-link" : ""}`}>
+                Analytics
+              </NavLink>
+            )}
           </nav>
           <div className="site-actions">
-            <button onClick={() => void loadAll()} disabled={isBusy}>
+            <button onClick={refreshData} disabled={isBusy}>
               {isBusy ? "Syncing..." : "Refresh Data"}
             </button>
             <button className="secondary" onClick={logout}>
@@ -1699,14 +1827,18 @@ export function App() {
               <strong>{metrics?.pendingOrders ?? 0}</strong>
               <span>Pending</span>
             </div>
-            <div className="dashboard-stat dashboard-stat-products">
-              <strong>{products.filter((p) => p.active).length}</strong>
-              <span>Active Products</span>
-            </div>
-            <div className="dashboard-stat dashboard-stat-promos">
-              <strong>{promos.filter((promo) => promo.active).length}</strong>
-              <span>Active Promos</span>
-            </div>
+            {adminRole === "full" && (
+              <>
+                <div className="dashboard-stat dashboard-stat-products">
+                  <strong>{products.filter((p) => p.active).length}</strong>
+                  <span>Active Products</span>
+                </div>
+                <div className="dashboard-stat dashboard-stat-promos">
+                  <strong>{promos.filter((promo) => promo.active).length}</strong>
+                  <span>Active Promos</span>
+                </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -1717,6 +1849,7 @@ export function App() {
           <Route
             path="/admin"
             element={
+              adminRole === "full" ? (
               <div className="page-stack">
                 <div className="tabs sub-tabs">
                   {ADMIN_TABS.map((tab) => (
@@ -2077,6 +2210,9 @@ export function App() {
                   </div>
                 )}
               </div>
+              ) : (
+                <Navigate to="/orders" replace />
+              )
             }
           />
           <Route
@@ -2155,7 +2291,7 @@ export function App() {
                                 <th className="column-order-status">Status</th>
                                 <th>Payment</th>
                                 <th>Price</th>
-                                <th>Profit</th>
+                                <th>{adminRole === "orders" ? "Profit %" : "Profit"}</th>
                                 <th>Scheduled</th>
                                 <th>Order Placed</th>
                               </tr>
@@ -2199,7 +2335,13 @@ export function App() {
                                   </td>
                                   <td>{order.payment_method === "zelle" ? "Zelle" : "Cash"}</td>
                                   <td>${Number(order.total).toFixed(2)}</td>
-                                  <td>${Number(order.gross_profit ?? 0).toFixed(2)}</td>
+                                  <td>
+                                    {formatOrderProfit(
+                                      Number(order.gross_profit ?? 0),
+                                      Number(order.total),
+                                      adminRole
+                                    )}
+                                  </td>
                                   <td>{formatScheduledTime(order.scheduled_delivery_time)}</td>
                                   <td>{formatOrderPlacedTime(order.created_at)}</td>
                                 </tr>
@@ -2215,7 +2357,226 @@ export function App() {
               </div>
             }
           />
-          <Route path="*" element={<Navigate to="/admin" replace />} />
+          <Route
+            path="/analytics"
+            element={
+              adminRole === "full" ? (
+              <div className="page-stack analytics-page">
+                <div className="card analytics-controls-card">
+                  <div className="section-header">
+                    <div>
+                      <h3>Order Analytics</h3>
+                      <p className="muted product-table-hint">
+                        Choose a date range, review daily performance, and export a PDF orders report.
+                      </p>
+                    </div>
+                    <div className="section-actions analytics-range-actions">
+                      <label className="analytics-datetime-field">
+                        <span>Start</span>
+                        <input
+                          type="datetime-local"
+                          value={analyticsStartAt}
+                          onChange={(event) => setAnalyticsStartAt(event.target.value)}
+                        />
+                      </label>
+                      <label className="analytics-datetime-field">
+                        <span>End</span>
+                        <input
+                          type="datetime-local"
+                          value={analyticsEndAt}
+                          onChange={(event) => setAnalyticsEndAt(event.target.value)}
+                        />
+                      </label>
+                      <button type="button" onClick={() => void runOrdersReport()} disabled={isGeneratingReport}>
+                        {isGeneratingReport ? "Generating..." : "Run Orders Report"}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="analytics-summary-grid">
+                    <div className="analytics-summary-card">
+                      <strong>{analyticsSummary.orderCount}</strong>
+                      <span>Orders</span>
+                    </div>
+                    <div className="analytics-summary-card">
+                      <strong>${analyticsSummary.revenue.toFixed(2)}</strong>
+                      <span>Revenue</span>
+                    </div>
+                    <div className="analytics-summary-card">
+                      <strong>${analyticsSummary.profit.toFixed(2)}</strong>
+                      <span>Profit</span>
+                    </div>
+                    <div className="analytics-summary-card">
+                      <strong>${analyticsSummary.averageOrderValue.toFixed(2)}</strong>
+                      <span>Avg Order</span>
+                    </div>
+                    <div className="analytics-summary-card">
+                      <strong>{analyticsSummary.completeCount}</strong>
+                      <span>Complete</span>
+                    </div>
+                    <div className="analytics-summary-card">
+                      <strong>{analyticsSummary.pendingCount}</strong>
+                      <span>Pending</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="card analytics-display-card">
+                  <div className="section-header">
+                    <div>
+                      <h3>{getAnalyticsPeriodLabel(analyticsGranularity)}</h3>
+                      <p className="muted product-table-hint">
+                        {analyticsGranularity === "daily"
+                          ? "Daily bars for ranges of 7 days or less."
+                          : "Weekly bars for ranges longer than 7 days."}
+                      </p>
+                    </div>
+                    <div className="section-actions analytics-view-actions">
+                      {analyticsDisplayMode === "graph" && (
+                        <select
+                          className="small-action-btn"
+                          value={analyticsGraphMetric}
+                          onChange={(event) =>
+                            setAnalyticsGraphMetric(event.target.value as "orders" | "revenue")
+                          }
+                        >
+                          <option value="orders">Graph: Orders</option>
+                          <option value="revenue">Graph: Revenue &amp; Profit</option>
+                        </select>
+                      )}
+                      <div className="analytics-view-toggle">
+                        <button
+                          type="button"
+                          className={analyticsDisplayMode === "table" ? "active" : "secondary"}
+                          onClick={() => setAnalyticsDisplayMode("table")}
+                        >
+                          Table
+                        </button>
+                        <button
+                          type="button"
+                          className={analyticsDisplayMode === "graph" ? "active" : "secondary"}
+                          onClick={() => setAnalyticsDisplayMode("graph")}
+                        >
+                          Graph
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {analyticsChartRows.length === 0 ? (
+                    <p className="muted">No orders in the selected time range.</p>
+                  ) : analyticsDisplayMode === "table" ? (
+                    <div className="table-scroll-wrap">
+                      <table className="data-table analytics-table">
+                        <thead>
+                          <tr>
+                            <th>{analyticsGranularity === "daily" ? "Date" : "Week"}</th>
+                            <th>Orders</th>
+                            <th>Revenue</th>
+                            <th>Profit</th>
+                            <th>Cancelled</th>
+                            <th>Avg Order</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {analyticsChartRows.map((row) => (
+                            <tr key={row.dateKey}>
+                              <td>{row.label}</td>
+                              <td>{row.orderCount}</td>
+                              <td>${row.revenue.toFixed(2)}</td>
+                              <td>${row.profit.toFixed(2)}</td>
+                              <td>{row.cancelledCount}</td>
+                              <td>
+                                ${row.orderCount > 0 ? (row.revenue / row.orderCount).toFixed(2) : "0.00"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <>
+                      {analyticsGraphMetric === "revenue" && (
+                        <div className="analytics-chart-legend">
+                          <span className="analytics-legend-item">
+                            <i className="analytics-legend-swatch analytics-legend-swatch-cost" />
+                            Costs
+                          </span>
+                          <span className="analytics-legend-item">
+                            <i className="analytics-legend-swatch analytics-legend-swatch-profit" />
+                            Profit
+                          </span>
+                        </div>
+                      )}
+                      <div className="analytics-chart">
+                        {analyticsChartRows.map((row) => {
+                          if (analyticsGraphMetric === "orders") {
+                            const height = Math.max(8, Math.round((row.orderCount / analyticsGraphMax) * 100));
+                            return (
+                              <div className="analytics-chart-column" key={row.dateKey}>
+                                <div className="analytics-chart-bar-wrap">
+                                  <div
+                                    className="analytics-chart-bar analytics-chart-bar-orders"
+                                    style={{ height: `${height}%` }}
+                                    title={`${row.orderCount} orders`}
+                                  />
+                                </div>
+                                <span className="analytics-chart-value">{row.orderCount}</span>
+                                <span className="analytics-chart-label">{row.label}</span>
+                              </div>
+                            );
+                          }
+
+                          const revenueHeight = Math.max(
+                            8,
+                            Math.round((row.revenue / analyticsGraphMax) * 100)
+                          );
+                          const profitAmount = Math.max(0, Math.min(row.profit, row.revenue));
+                          const costAmount = Math.max(0, row.revenue - profitAmount);
+                          const profitHeight =
+                            row.revenue > 0
+                              ? Math.max(0, Math.round((profitAmount / analyticsGraphMax) * 100))
+                              : 0;
+                          const costHeight = Math.max(0, revenueHeight - profitHeight);
+
+                          return (
+                            <div className="analytics-chart-column" key={row.dateKey}>
+                              <div className="analytics-chart-bar-wrap">
+                                <div
+                                  className="analytics-chart-stack"
+                                  style={{ height: `${revenueHeight}%` }}
+                                  title={`Revenue $${row.revenue.toFixed(2)} · Profit $${profitAmount.toFixed(2)} · Costs $${costAmount.toFixed(2)}`}
+                                >
+                                  {profitHeight > 0 && (
+                                    <div
+                                      className="analytics-chart-bar analytics-chart-bar-profit"
+                                      style={{ height: `${(profitHeight / revenueHeight) * 100}%` }}
+                                    />
+                                  )}
+                                  {costHeight > 0 && (
+                                    <div
+                                      className="analytics-chart-bar analytics-chart-bar-cost"
+                                      style={{ height: `${(costHeight / revenueHeight) * 100}%` }}
+                                    />
+                                  )}
+                                </div>
+                              </div>
+                              <span className="analytics-chart-value">${row.revenue.toFixed(0)}</span>
+                              <span className="analytics-chart-subvalue">${profitAmount.toFixed(0)} profit</span>
+                              <span className="analytics-chart-label">{row.label}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+              ) : (
+                <Navigate to="/orders" replace />
+              )
+            }
+          />
+          <Route path="*" element={<Navigate to="/orders" replace />} />
         </Routes>
 
         <Modal
@@ -2806,6 +3167,7 @@ export function App() {
                       <th>Quantity</th>
                       <th>Rule Price</th>
                       <th>Line Total</th>
+                      <th>{adminRole === "orders" ? "Profit %" : "Profit"}</th>
                       <th />
                     </tr>
                   </thead>
@@ -2813,7 +3175,16 @@ export function App() {
                     {orderEditorItems.map((item, index) => {
                       const quantity = Number(item.quantity) || 0;
                       const basePrice = Number(productById.get(item.productId)?.base_price ?? 0);
-                      const lineEstimate = basePrice * quantity;
+                      const quoteLine = orderQuotePreview?.items?.[index];
+                      const lineTotal =
+                        quoteLine?.product_id === item.productId ? quoteLine.line_total : basePrice * quantity;
+                      const lineCogs =
+                        Number(productById.get(item.productId)?.cogs_per_unit ?? 0) * Math.max(0, quantity);
+                      const discountShare =
+                        orderEditorTotals.quoteTotal > 0
+                          ? (lineTotal / orderEditorTotals.quoteTotal) * orderEditorTotals.customDiscount
+                          : 0;
+                      const lineProfit = lineTotal - discountShare - lineCogs;
                       return (
                         <tr key={`order-item-${index}`}>
                           <td>
@@ -2850,7 +3221,10 @@ export function App() {
                             />
                           </td>
                           <td>${basePrice.toFixed(2)}</td>
-                          <td>${lineEstimate.toFixed(2)}</td>
+                          <td>${lineTotal.toFixed(2)}</td>
+                          <td>
+                            {formatOrderProfit(lineProfit, orderEditorTotals.total, adminRole ?? "orders")}
+                          </td>
                           <td>
                             <button
                               type="button"
@@ -2904,8 +3278,10 @@ export function App() {
                   <strong>-${orderEditorTotals.customDiscount.toFixed(2)}</strong>
                   <span>Total</span>
                   <strong>${orderEditorTotals.total.toFixed(2)}</strong>
-                  <span>Estimated Profit</span>
-                  <strong>${orderEditorTotals.grossProfit.toFixed(2)}</strong>
+                  <span>{adminRole === "orders" ? "Estimated Profit %" : "Estimated Profit"}</span>
+                  <strong>
+                    {formatOrderProfit(orderEditorTotals.grossProfit, orderEditorTotals.total, adminRole ?? "orders")}
+                  </strong>
                 </div>
               </div>
 
