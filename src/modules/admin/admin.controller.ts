@@ -16,6 +16,7 @@ import {
   orderRepository,
   orderSettingsRepository,
   productImageRepository,
+  pricingGroupRepository,
   pricingRepository,
   promoRepository
 } from "../data/repositories.js";
@@ -28,6 +29,7 @@ import {
   AdminOrderStatusSchema,
   CategoryCreateSchema,
   CategoryUpdateSchema,
+  PricingGroupCreateSchema,
   PricingRuleCreateSchema,
   PricingRuleUpdateSchema,
   ProductCreateSchema,
@@ -119,6 +121,33 @@ adminRouter.patch("/admin/categories/:categoryId", async (req, res, next) => {
 adminRouter.delete("/admin/categories/:categoryId", async (req, res, next) => {
   try {
     await catalogRepository.deleteCategory(req.params.categoryId);
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.get("/admin/pricing-groups", async (_req, res, next) => {
+  try {
+    res.json({ pricingGroups: await pricingGroupRepository.list() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.post("/admin/pricing-groups", async (req, res, next) => {
+  try {
+    const payload = PricingGroupCreateSchema.parse(req.body);
+    const pricingGroup = await pricingGroupRepository.create(payload);
+    res.status(201).json({ pricingGroup });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.delete("/admin/pricing-groups/:pricingGroupId", async (req, res, next) => {
+  try {
+    await pricingGroupRepository.delete(String(req.params.pricingGroupId));
     res.status(204).send();
   } catch (error) {
     next(error);

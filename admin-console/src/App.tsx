@@ -16,6 +16,7 @@ import type {
   OrderMetrics,
   OrderRecord,
   OrderSettings,
+  PricingGroup,
   PricingRule,
   PricingTier,
   Product,
@@ -54,11 +55,12 @@ const writeAdminSession = (session: AdminSession | null): void => {
   localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify(session));
 };
 
-type AdminTab = "products" | "promos" | "rules" | "categories" | "settings";
+type AdminTab = "products" | "promos" | "rules" | "pricing-groups" | "categories" | "settings";
 const ADMIN_TABS: { id: AdminTab; label: string }[] = [
   { id: "products", label: "Products" },
   { id: "promos", label: "Promo Codes" },
   { id: "rules", label: "Pricing Rules" },
+  { id: "pricing-groups", label: "Pricing Groups" },
   { id: "categories", label: "Categories" },
   { id: "settings", label: "Settings" }
 ];
@@ -68,7 +70,7 @@ const STATUS_LABELS: Record<OrderRecord["status"], string> = {
   complete: "Complete",
   cancelled: "Cancelled"
 };
-type AddModalKind = "product" | "promo" | "rule" | "category" | null;
+type AddModalKind = "product" | "promo" | "rule" | "category" | "pricing-group" | null;
 type OrderDateFilter = "today" | "yesterday" | "last7" | "all";
 interface ProductDraft {
   sku: string;
@@ -470,6 +472,7 @@ export function App() {
 
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<ProductCategory[]>([]);
+  const [pricingGroups, setPricingGroups] = useState<PricingGroup[]>([]);
   const [promos, setPromos] = useState<PromoCode[]>([]);
   const [rules, setRules] = useState<PricingRule[]>([]);
   const [orders, setOrders] = useState<OrderRecord[]>([]);
@@ -556,6 +559,7 @@ export function App() {
     description: ""
   });
   const [newCategory, setNewCategory] = useState({ slug: "", name: "" });
+  const [newPricingGroup, setNewPricingGroup] = useState({ slug: "", name: "", categorySlug: "" });
   const [newRule, setNewRule] = useState({
     slug: "",
     name: "",
@@ -575,6 +579,18 @@ export function App() {
     try {
       const categoriesRes = await client.request<{ categories: ProductCategory[] }>("/admin/categories");
       setCategories(categoriesRes.categories);
+    } catch (err) {
+      if (showError) {
+        setError((err as Error).message);
+      }
+    }
+  };
+
+  const loadPricingGroups = async (showError = false) => {
+    if (!token) return;
+    try {
+      const pricingGroupsRes = await client.request<{ pricingGroups: PricingGroup[] }>("/admin/pricing-groups");
+      setPricingGroups(pricingGroupsRes.pricingGroups);
     } catch (err) {
       if (showError) {
         setError((err as Error).message);
@@ -613,6 +629,7 @@ export function App() {
     setError(null);
     try {
       await loadCategories();
+      await loadPricingGroups();
       const [productsRes, promosRes, rulesRes, ordersRes, metricsRes, settingsRes, notificationEmailsRes] = await Promise.all([
         client.request<{ products: Product[] }>("/admin/products"),
         client.request<{ promos: PromoCode[] }>("/admin/promos"),
@@ -681,8 +698,11 @@ export function App() {
 
   useEffect(() => {
     if (!token || adminRole !== "full") return;
-    if (adminTab === "products" || adminTab === "categories") {
+    if (adminTab === "products" || adminTab === "categories" || adminTab === "pricing-groups") {
       void loadCategories();
+    }
+    if (adminTab === "products" || adminTab === "rules" || adminTab === "pricing-groups") {
+      void loadPricingGroups();
     }
   }, [token, adminRole, adminTab]);
 
@@ -714,6 +734,7 @@ export function App() {
     setAdminRole(null);
     setProducts([]);
     setCategories([]);
+    setPricingGroups([]);
     setPromos([]);
     setRules([]);
     setOrders([]);
@@ -1197,6 +1218,23 @@ export function App() {
     }
   };
 
+  const createPricingGroup = async (event: FormEvent) => {
+    event.preventDefault();
+    setIsBusy(true);
+    setError(null);
+    try {
+      await client.request<{ pricingGroup: PricingGroup }>("/admin/pricing-groups", "POST", newPricingGroup);
+      setNewPricingGroup({ slug: "", name: "", categorySlug: categories[0]?.slug ?? "" });
+      setActiveAddModal(null);
+      await loadPricingGroups(true);
+      await loadAll();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   const createRule = async (event: FormEvent) => {
     event.preventDefault();
     setIsBusy(true);
@@ -1257,6 +1295,27 @@ export function App() {
     try {
       await client.request(`/admin/categories/${categoryId}`, "DELETE");
       await loadCategories(true);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const deletePricingGroup = async (pricingGroupId: string) => {
+    if (
+      !window.confirm(
+        "Delete this pricing group? Linked pricing rules will be removed and affected products will lose their volume discount group."
+      )
+    ) {
+      return;
+    }
+    setIsBusy(true);
+    setError(null);
+    try {
+      await client.request(`/admin/pricing-groups/${pricingGroupId}`, "DELETE");
+      await loadPricingGroups(true);
+      await loadAll();
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -1778,12 +1837,34 @@ export function App() {
     );
   };
 
-  const productGroups = [
-    ...new Set([
-      ...rules.map((rule) => rule.pricing_group_id),
-      ...products.map((p) => p.pricing_group_slug).filter((slug): slug is string => Boolean(slug))
-    ])
-  ];
+  const pricingGroupOptions = useMemo(() => {
+    const byId = new Map(pricingGroups.map((group) => [group.id, group]));
+    for (const rule of rules) {
+      if (!byId.has(rule.pricing_group_id)) {
+        byId.set(rule.pricing_group_id, {
+          id: rule.pricing_group_id,
+          slug: rule.pricing_group_id,
+          name: rule.pricing_group_id,
+          category_id: "",
+          category_slug: "",
+          category_name: ""
+        });
+      }
+    }
+    for (const product of products) {
+      if (product.pricing_group_id && !byId.has(product.pricing_group_id)) {
+        byId.set(product.pricing_group_id, {
+          id: product.pricing_group_id,
+          slug: product.pricing_group_slug ?? product.pricing_group_id,
+          name: product.pricing_group_name ?? product.pricing_group_id,
+          category_id: "",
+          category_slug: "",
+          category_name: ""
+        });
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [pricingGroups, products, rules]);
 
   useEffect(() => {
     if (categories.length === 0) return;
@@ -1979,7 +2060,7 @@ export function App() {
                           key={p.id}
                           product={p}
                           categories={categories}
-                          pricingGroups={productGroups}
+                          pricingGroups={pricingGroupOptions}
                           tagSuggestions={allProductTagSuggestions}
                           inlineEdit={productInlineEdit}
                           savingCellKey={productInlineSaving}
@@ -2078,9 +2159,73 @@ export function App() {
                   </div>
                   <p className="status">Adjust tiers and constraints with form controls. Changes apply on save.</p>
                   {rules.map((rule) => (
-                    <RuleEditor key={rule.id} rule={rule} onSave={updateRule} disabled={isBusy} />
+                    <RuleEditor
+                      key={rule.id}
+                      rule={rule}
+                      pricingGroupName={
+                        pricingGroupOptions.find((group) => group.id === rule.pricing_group_id)?.name ??
+                        rule.pricing_group_id
+                      }
+                      onSave={updateRule}
+                      disabled={isBusy}
+                    />
                   ))}
                 </div>
+                )}
+
+                {adminTab === "pricing-groups" && (
+                  <div className="card">
+                    <div className="section-header">
+                      <h3>Pricing Groups</h3>
+                      <button
+                        type="button"
+                        className="small-action-btn"
+                        onClick={() => {
+                          setNewPricingGroup((current) => ({
+                            ...current,
+                            categorySlug: current.categorySlug || categories[0]?.slug || ""
+                          }));
+                          setActiveAddModal("pricing-group");
+                        }}
+                        disabled={categories.length === 0}
+                      >
+                        Add Pricing Group
+                      </button>
+                    </div>
+                    {categories.length === 0 && (
+                      <p className="muted">Create a product category before adding pricing groups.</p>
+                    )}
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Slug</th>
+                          <th>Name</th>
+                          <th>Category</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pricingGroups.map((group) => (
+                          <tr key={group.id}>
+                            <td>
+                              <strong>{group.slug}</strong>
+                            </td>
+                            <td>{group.name}</td>
+                            <td>{group.category_name}</td>
+                            <td>
+                              <button
+                                type="button"
+                                className="danger secondary"
+                                onClick={() => void deletePricingGroup(group.id)}
+                              >
+                                Delete
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
 
                 {adminTab === "categories" && (
@@ -2763,9 +2908,9 @@ export function App() {
                 onChange={(e) => setProductDraft((p) => ({ ...p, pricingGroupSlug: e.target.value }))}
               >
                 <option value="">No volume discount</option>
-                {productGroups.map((groupId) => (
-                  <option key={groupId} value={groupId}>
-                    {groupId}
+                {pricingGroupOptions.map((group) => (
+                  <option key={group.id} value={group.slug}>
+                    {group.name} ({group.slug})
                   </option>
                 ))}
               </select>
@@ -3011,8 +3156,10 @@ export function App() {
             <Field label="Pricing group">
               <select value={newRule.pricingGroupId} onChange={(e) => setNewRule((prev) => ({ ...prev, pricingGroupId: e.target.value }))}>
                 <option value="">Select group</option>
-                {productGroups.map((groupId) => (
-                  <option key={groupId} value={groupId}>{groupId}</option>
+                {pricingGroupOptions.map((group) => (
+                  <option key={group.id} value={group.id}>
+                    {group.name} ({group.id})
+                  </option>
                 ))}
               </select>
             </Field>
@@ -3037,6 +3184,49 @@ export function App() {
             </Field>
             <div style={{ marginTop: 10 }} className="actions">
               <button type="submit" disabled={isBusy || !newRule.pricingGroupId}>Add Pricing Rule</button>
+            </div>
+          </form>
+        </Modal>
+
+        <Modal
+          open={activeAddModal === "pricing-group"}
+          title="Add Pricing Group"
+          onClose={() => setActiveAddModal(null)}
+        >
+          <form onSubmit={createPricingGroup}>
+            <Field label="Slug">
+              <input
+                required
+                value={newPricingGroup.slug}
+                placeholder="e.g. flower_top_shelf"
+                onChange={(e) => setNewPricingGroup((prev) => ({ ...prev, slug: e.target.value }))}
+              />
+            </Field>
+            <Field label="Display name">
+              <input
+                required
+                value={newPricingGroup.name}
+                placeholder="e.g. Flower Top Shelf"
+                onChange={(e) => setNewPricingGroup((prev) => ({ ...prev, name: e.target.value }))}
+              />
+            </Field>
+            <Field label="Category">
+              <select
+                required
+                value={newPricingGroup.categorySlug}
+                onChange={(e) => setNewPricingGroup((prev) => ({ ...prev, categorySlug: e.target.value }))}
+              >
+                {categories.map((category) => (
+                  <option key={category.id} value={category.slug}>
+                    {category.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <div style={{ marginTop: 10 }} className="actions">
+              <button type="submit" disabled={isBusy || categories.length === 0}>
+                Add Pricing Group
+              </button>
             </div>
           </form>
         </Modal>
@@ -3353,10 +3543,12 @@ export function App() {
 
 function RuleEditor({
   rule,
+  pricingGroupName,
   onSave,
   disabled
 }: {
   rule: PricingRule;
+  pricingGroupName: string;
   onSave: (
     rule: PricingRule,
     tiers: PricingTier[],
@@ -3386,9 +3578,7 @@ function RuleEditor({
     <div className="card rule-card">
       <h4>{rule.name}</h4>
       <div className="rule-meta">
-        <span className="meta-pill meta-pill-slug">Slug: {rule.slug}</span>
-        <span className="meta-pill meta-pill-group">Group: {rule.pricing_group_id}</span>
-        <span className="meta-pill meta-pill-metric">Metric: {rule.metric}</span>
+        <span className="meta-pill meta-pill-group">Pricing Group: {pricingGroupName}</span>
       </div>
 
       <div className="rule-table-wrap">
@@ -3933,7 +4123,7 @@ function ProductTableRow({
 }: {
   product: Product;
   categories: ProductCategory[];
-  pricingGroups: string[];
+  pricingGroups: PricingGroup[];
   tagSuggestions: string[];
   inlineEdit: { productId: string; column: ProductInlineColumn; value: string } | null;
   savingCellKey: string | null;
@@ -4057,12 +4247,14 @@ function ProductTableRow({
         display={product.pricing_group_id ?? "—"}
         options={[
           { value: "", label: "No volume discount" },
-          ...Array.from(
-            new Set([
-              ...pricingGroups,
-              ...(product.pricing_group_id ? [product.pricing_group_id] : [])
-            ])
-          ).map((groupId) => ({ value: groupId, label: groupId }))
+          ...pricingGroups.map((group) => ({
+            value: group.id,
+            label: `${group.name} (${group.id})`
+          })),
+          ...(product.pricing_group_id &&
+          !pricingGroups.some((group) => group.id === product.pricing_group_id)
+            ? [{ value: product.pricing_group_id, label: product.pricing_group_id }]
+            : [])
         ]}
         onSelect={(value) => onSelectFieldChange("pricing_group_id", value)}
       />

@@ -48,6 +48,15 @@ export interface ProductCategory {
   name: string;
 }
 
+export interface PricingGroup {
+  id: string;
+  slug: string;
+  name: string;
+  category_id: string;
+  category_slug: string;
+  category_name: string;
+}
+
 export interface PromoCode {
   id: string;
   code: string;

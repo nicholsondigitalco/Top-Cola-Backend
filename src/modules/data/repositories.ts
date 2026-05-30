@@ -467,6 +467,61 @@ export const catalogRepository = {
   }
 };
 
+export interface PricingGroupRecord {
+  id: string;
+  slug: string;
+  name: string;
+  category_id: string;
+  category_slug: string;
+  category_name: string;
+}
+
+const mapPricingGroup = (row: any): PricingGroupRecord => ({
+  id: row.id,
+  slug: row.slug,
+  name: row.name,
+  category_id: row.category_id,
+  category_slug: row.product_categories?.slug ?? row.category_id,
+  category_name: row.product_categories?.name ?? row.category_id
+});
+
+export const pricingGroupRepository = {
+  async list(): Promise<PricingGroupRecord[]> {
+    const { data, error } = await supabase
+      .from("pricing_groups")
+      .select("id, slug, name, category_id, product_categories(slug, name)")
+      .order("name", { ascending: true });
+    if (error) throw error;
+    return (data ?? []).map(mapPricingGroup);
+  },
+
+  async create(payload: { slug: string; name: string; categorySlug: string }): Promise<PricingGroupRecord> {
+    const id = sanitizeIdentifier(payload.slug);
+    if (!id) throw new Error("Pricing group slug is required.");
+
+    const { data: category, error: categoryError } = await supabase
+      .from("product_categories")
+      .select("id")
+      .eq("slug", payload.categorySlug)
+      .maybeSingle();
+    if (categoryError) throw categoryError;
+    if (!category) throw new Error("Category not found.");
+
+    const { data, error } = await supabase
+      .from("pricing_groups")
+      .insert({ id, slug: id, name: payload.name, category_id: category.id })
+      .select("id, slug, name, category_id, product_categories(slug, name)")
+      .single();
+    if (error) throw error;
+    return mapPricingGroup(data);
+  },
+
+  async delete(pricingGroupId: string): Promise<void> {
+    const { error } = await supabase.from("pricing_groups").delete().eq("id", pricingGroupId);
+    if (error) throw error;
+  }
+};
+
 export const pricingRepository = {
   async getRulesByPricingGroupIds(pricingGroupIds: string[]): Promise<PricingRule[]> {
     if (pricingGroupIds.length === 0) {

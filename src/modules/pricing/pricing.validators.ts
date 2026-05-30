@@ -64,6 +64,12 @@ export const CategoryUpdateSchema = z.object({
   name: z.string().trim().min(2).max(120)
 });
 
+export const PricingGroupCreateSchema = z.object({
+  slug: z.string().trim().min(2).max(80),
+  name: z.string().trim().min(2).max(120),
+  categorySlug: z.string().trim().min(2).max(80)
+});
+
 export const PromoCreateSchema = z.object({
   code: z.string().trim().min(2).max(40),
   discountType: z.enum(["percent", "fixed"]),
