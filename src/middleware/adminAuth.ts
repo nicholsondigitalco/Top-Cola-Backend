@@ -62,10 +62,16 @@ export const issueAdminToken = (role: AdminRole): string =>
   sign({ exp: Date.now() + TOKEN_TTL_MS, role });
 
 export const authenticateAdminPassword = async (candidatePassword: string): Promise<AdminRole | null> => {
-  if (await bcrypt.compare(candidatePassword, env.ADMIN_FULL_PASSWORD_HASH)) {
+  if (
+    env.ADMIN_FULL_PASSWORD_HASH &&
+    (await bcrypt.compare(candidatePassword, env.ADMIN_FULL_PASSWORD_HASH))
+  ) {
     return "full";
   }
-  if (await bcrypt.compare(candidatePassword, env.ADMIN_ORDERS_PASSWORD_HASH)) {
+  if (
+    env.ADMIN_ORDERS_PASSWORD_HASH &&
+    (await bcrypt.compare(candidatePassword, env.ADMIN_ORDERS_PASSWORD_HASH))
+  ) {
     return "orders";
   }
   return null;
