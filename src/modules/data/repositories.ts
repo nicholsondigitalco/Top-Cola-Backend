@@ -134,9 +134,7 @@ const mapProduct = (row: any): Product => ({
         })
     : [],
   variations: mapProductVariations(row.variations),
-  tags: Array.isArray(row.tags)
-    ? row.tags.map((tag: unknown) => (typeof tag === "string" ? tag.trim() : "")).filter(Boolean)
-    : [],
+  tags: normalizeProductTags(row.tags),
   avg_order_quantity: Number(row.avg_order_quantity ?? 0),
   avg_discount_per_unit: Number(row.avg_discount_per_unit ?? 0),
   avg_profit_margin_per_unit: Number(row.avg_profit_margin_per_unit ?? 0),

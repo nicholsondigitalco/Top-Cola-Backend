@@ -35,13 +35,12 @@ const pickTier = (tiers: PricingTier[], metricTotal: number): PricingTier => {
   return chosen;
 };
 
-const validateConstraints = (rule: PricingRule, itemQuantities: number[], metricTotal: number, groupSlug: string) => {
+const validateConstraints = (rule: PricingRule, metricTotal: number, groupSlug: string) => {
   const { allowed_quantities: allowedQuantities, min_checkout_grams: minCheckoutGrams } = rule.constraints;
   if (allowedQuantities?.length) {
-    const invalid = itemQuantities.find((value) => !allowedQuantities.includes(value));
-    if (invalid !== undefined) {
+    if (!allowedQuantities.includes(metricTotal)) {
       throw new Error(
-        `Quantity ${invalid} is not permitted for ${groupSlug}. Allowed: ${allowedQuantities.join(", ")}`
+        `Quantity ${metricTotal} is not permitted for ${groupSlug}. Allowed: ${allowedQuantities.join(", ")}`
       );
     }
   }
@@ -163,11 +162,10 @@ export class PricingEngine {
       }
 
       const metricTotal = roundCurrency(groupRows.reduce((sum, row) => sum + row.quantity, 0));
-      const itemQuantities = groupRows.map((row) => row.quantity);
       const groupSlug = groupRows[0].product.pricing_group_slug ?? pricingGroupId;
 
       if (!options.ignoreRuleConstraints) {
-        validateConstraints(rule, itemQuantities, metricTotal, groupSlug);
+        validateConstraints(rule, metricTotal, groupSlug);
       }
 
       const groupSubtotal = roundCurrency(

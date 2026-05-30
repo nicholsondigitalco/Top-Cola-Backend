@@ -10,7 +10,12 @@ const ProductVariationSchema = z.object({
   id: z.string().trim().min(1).max(80),
   name: z.string().trim().min(1).max(120)
 });
-const ProductTagSchema = z.string().trim().min(1).max(40);
+const ProductTagSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(40)
+  .transform((value) => value.toLowerCase());
 
 export const QuoteRequestSchema = z.object({
   items: z.array(QuoteItemSchema).min(1),

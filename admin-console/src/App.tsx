@@ -1,4 +1,4 @@
-import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { BrowserRouter, NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { ApiClient } from "./api";
 import type {
@@ -107,14 +107,32 @@ const normalizeTagList = (entries: string[]): string[] => {
   const seen = new Set<string>();
   const tags: string[] = [];
   for (const entry of entries) {
-    const cleaned = entry.trim();
+    const cleaned = entry.trim().toLowerCase();
     if (!cleaned) continue;
-    const key = cleaned.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (seen.has(cleaned)) continue;
+    seen.add(cleaned);
     tags.push(cleaned);
   }
   return tags;
+};
+
+const serializeProductTags = (tags: string[]): string => JSON.stringify(normalizeTagList(tags));
+
+const parseProductTagsValue = (rawValue: string): string[] => {
+  try {
+    const parsed = JSON.parse(rawValue) as unknown;
+    if (Array.isArray(parsed)) {
+      return normalizeTagList(parsed.map((entry) => String(entry)));
+    }
+  } catch {
+    // Fall back to legacy comma-separated inline edits.
+  }
+  return normalizeTagList(
+    rawValue
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+  );
 };
 
 const formatScheduledTime = (value?: string | null): string => {
@@ -212,7 +230,7 @@ const getProductCellEditValue = (product: Product, column: ProductInlineColumn):
     case "pricing_group_id":
       return product.pricing_group_id ?? "";
     case "tags":
-      return (product.tags ?? []).join(", ");
+      return serializeProductTags(product.tags ?? []);
     case "active":
       return product.active ? "true" : "false";
     default:
@@ -260,14 +278,7 @@ const buildProductInlinePatch = (column: ProductInlineColumn, rawValue: string):
     case "pricing_group_id":
       return { pricingGroupSlug: trimmed || null };
     case "tags":
-      return {
-        tags: normalizeTagList(
-          trimmed
-            .split(",")
-            .map((entry) => entry.trim())
-            .filter(Boolean)
-        )
-      };
+      return { tags: parseProductTagsValue(rawValue) };
     case "active": {
       const normalized = trimmed.toLowerCase();
       if (["true", "1", "yes", "active"].includes(normalized)) return { active: true };
@@ -453,7 +464,6 @@ export function App() {
   const [productVariationsDraft, setProductVariationsDraft] = useState<ProductVariation[]>([]);
   const [productTagsDraft, setProductTagsDraft] = useState<string[]>([]);
   const [variationInputValue, setVariationInputValue] = useState("");
-  const [tagInputValue, setTagInputValue] = useState("");
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
   const [productImages, setProductImages] = useState<ProductImage[]>([]);
   const [pendingProductImages, setPendingProductImages] = useState<PendingProductImage[]>([]);
@@ -620,7 +630,6 @@ export function App() {
     setProductImages([]);
     clearPendingProductImages();
     setVariationInputValue("");
-    setTagInputValue("");
     setActiveAddModal("product");
   };
 
@@ -653,7 +662,6 @@ export function App() {
     clearPendingProductImages();
     await loadProductImages(product.id);
     setVariationInputValue("");
-    setTagInputValue("");
     setActiveAddModal("product");
   };
 
@@ -666,17 +674,6 @@ export function App() {
 
   const removeVariationTag = (variationId: string) => {
     setProductVariationsDraft((current) => current.filter((variation) => variation.id !== variationId));
-  };
-
-  const addProductTag = () => {
-    const nextTag = tagInputValue.trim();
-    if (!nextTag) return;
-    setProductTagsDraft((current) => normalizeTagList([...current, nextTag]));
-    setTagInputValue("");
-  };
-
-  const removeProductTag = (tagToRemove: string) => {
-    setProductTagsDraft((current) => current.filter((tag) => tag !== tagToRemove));
   };
 
   const convertDraftValueBetweenModes = (
@@ -815,7 +812,6 @@ export function App() {
   const closeProductModal = () => {
     setEditingProductId(null);
     setVariationInputValue("");
-    setTagInputValue("");
     setProductImages([]);
     clearPendingProductImages();
     setProductVariationsDraft([]);
@@ -894,7 +890,6 @@ export function App() {
       setProductImages([]);
       setPendingProductImages([]);
       setVariationInputValue("");
-      setTagInputValue("");
       setActiveAddModal(null);
       await loadAll();
     } catch (err) {
@@ -1460,6 +1455,11 @@ export function App() {
     );
   });
 
+  const allProductTagSuggestions = useMemo(
+    () => normalizeTagList(products.flatMap((product) => product.tags ?? [])).sort(),
+    [products]
+  );
+
   const promoRows = promos.filter((promo) => {
     const search = promoSearch.trim().toLowerCase();
     if (!search) return true;
@@ -1736,8 +1736,8 @@ export function App() {
                     <div>
                       <h3>Product Management</h3>
                       <p className="muted product-table-hint">
-                        Double-click editable cells to update inline. Category, pricing group, and status open a
-                        dropdown on double-click.
+                        Double-click editable cells to update inline. Category, pricing group, status, and tags use
+                        dropdown or typeahead on double-click.
                       </p>
                     </div>
                     <div className="section-actions">
@@ -1797,6 +1797,7 @@ export function App() {
                           product={p}
                           categories={categories}
                           pricingGroups={productGroups}
+                          tagSuggestions={allProductTagSuggestions}
                           inlineEdit={productInlineEdit}
                           savingCellKey={productInlineSaving}
                           onStartEdit={startProductInlineEdit}
@@ -2412,43 +2413,12 @@ export function App() {
               </div>
             </Field>
             <Field label="Tags (optional)" className="product-modal-full-width">
-              <div className="variation-editor">
-                <div className="variation-tags">
-                  {productTagsDraft.length > 0 ? (
-                    productTagsDraft.map((tag) => (
-                      <span key={tag} className="variation-tag">
-                        {tag}
-                        <button
-                          type="button"
-                          className="variation-tag-remove"
-                          onClick={() => removeProductTag(tag)}
-                          aria-label={`Remove ${tag}`}
-                        >
-                          x
-                        </button>
-                      </span>
-                    ))
-                  ) : (
-                    <span className="variation-tag-empty">No tags added yet</span>
-                  )}
-                </div>
-                <div className="variation-entry-row">
-                  <input
-                    placeholder="Type a tag and press Enter"
-                    value={tagInputValue}
-                    onChange={(e) => setTagInputValue(e.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        addProductTag();
-                      }
-                    }}
-                  />
-                  <button type="button" className="small-action-btn" onClick={addProductTag}>
-                    Add
-                  </button>
-                </div>
-              </div>
+              <TagTypeaheadEditor
+                tags={productTagsDraft}
+                suggestions={allProductTagSuggestions}
+                onChange={setProductTagsDraft}
+                placeholder="Type to search or add a tag"
+              />
             </Field>
             <Field label="Product Images" className="product-modal-full-width">
               <div className="image-manager">
@@ -3112,6 +3082,248 @@ function RuleEditor({
   );
 }
 
+function TagTypeaheadEditor({
+  tags,
+  suggestions,
+  onChange,
+  onCommit,
+  onCancel,
+  disabled = false,
+  compact = false,
+  placeholder = "Type to search tags..."
+}: {
+  tags: string[];
+  suggestions: string[];
+  onChange: (tags: string[]) => void;
+  onCommit?: () => void;
+  onCancel?: () => void;
+  disabled?: boolean;
+  compact?: boolean;
+  placeholder?: string;
+}) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [highlightIndex, setHighlightIndex] = useState(0);
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredSuggestions = suggestions.filter(
+    (suggestion) => !tags.includes(suggestion) && suggestion.includes(normalizedQuery)
+  );
+  const canCreateTag =
+    normalizedQuery.length > 0 && !tags.includes(normalizedQuery) && !suggestions.includes(normalizedQuery);
+  const options = [
+    ...filteredSuggestions.map((value) => ({ type: "existing" as const, value })),
+    ...(canCreateTag ? [{ type: "create" as const, value: normalizedQuery }] : [])
+  ];
+
+  useEffect(() => {
+    if (!open) return;
+    setHighlightIndex(0);
+  }, [normalizedQuery, open]);
+
+  useEffect(() => {
+    if (!onCommit) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        onCommit();
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [onCommit]);
+
+  const addTag = (rawTag: string) => {
+    const nextTag = rawTag.trim().toLowerCase();
+    if (!nextTag) return;
+    onChange(normalizeTagList([...tags, nextTag]));
+    setQuery("");
+    setOpen(false);
+    inputRef.current?.focus();
+  };
+
+  const removeTag = (tagToRemove: string) => {
+    onChange(tags.filter((tag) => tag !== tagToRemove));
+    inputRef.current?.focus();
+  };
+
+  const selectOption = (index: number) => {
+    const option = options[index];
+    if (!option) return;
+    addTag(option.value);
+  };
+
+  return (
+    <div
+      ref={rootRef}
+      className={`tag-typeahead${compact ? " tag-typeahead-compact" : ""}${disabled ? " tag-typeahead-disabled" : ""}`}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <div className="tag-typeahead-tags">
+        {tags.length > 0 ? (
+          tags.map((tag) => (
+            <span key={tag} className="variation-tag">
+              {tag}
+              <button
+                type="button"
+                className="variation-tag-remove"
+                disabled={disabled}
+                onClick={() => removeTag(tag)}
+                aria-label={`Remove ${tag}`}
+              >
+                x
+              </button>
+            </span>
+          ))
+        ) : (
+          <span className="variation-tag-empty">No tags added yet</span>
+        )}
+      </div>
+      <div className="tag-typeahead-input-wrap">
+        <input
+          ref={inputRef}
+          type="text"
+          className="tag-typeahead-input"
+          value={query}
+          disabled={disabled}
+          placeholder={placeholder}
+          onFocus={() => setOpen(true)}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setOpen(true);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              if (!open) setOpen(true);
+              setHighlightIndex((current) => Math.min(current + 1, Math.max(options.length - 1, 0)));
+              return;
+            }
+            if (event.key === "ArrowUp") {
+              event.preventDefault();
+              setHighlightIndex((current) => Math.max(current - 1, 0));
+              return;
+            }
+            if (event.key === "Enter") {
+              event.preventDefault();
+              if (open && options.length > 0) {
+                selectOption(highlightIndex);
+                return;
+              }
+              if (normalizedQuery) addTag(normalizedQuery);
+              return;
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setOpen(false);
+              setQuery("");
+              onCancel?.();
+              return;
+            }
+            if (event.key === "Backspace" && !query && tags.length > 0) {
+              removeTag(tags[tags.length - 1]);
+            }
+          }}
+          onBlur={() => {
+            window.setTimeout(() => setOpen(false), 120);
+          }}
+        />
+        {open && options.length > 0 && (
+          <ul className="tag-typeahead-menu" role="listbox">
+            {options.map((option, index) => (
+              <li key={`${option.type}-${option.value}`}>
+                <button
+                  type="button"
+                  className={`tag-typeahead-option${index === highlightIndex ? " is-active" : ""}`}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => selectOption(index)}
+                >
+                  {option.type === "create" ? `Create "${option.value}"` : option.value}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ProductTagsInlineCell({
+  className,
+  productTags,
+  tagSuggestions,
+  editValue,
+  isEditing,
+  isSaving,
+  onStartEdit,
+  onTagsChange,
+  onCommit,
+  onCancel
+}: {
+  className?: string;
+  productTags: string[];
+  tagSuggestions: string[];
+  editValue: string;
+  isEditing: boolean;
+  isSaving: boolean;
+  onStartEdit: () => void;
+  onTagsChange: (value: string) => void;
+  onCommit: () => void;
+  onCancel: () => void;
+}) {
+  const cellClassName = [
+    className,
+    "product-cell-editable",
+    "column-tags",
+    isEditing ? "product-cell-editing product-cell-tags" : "",
+    isSaving ? "product-cell-saving" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  if (isEditing) {
+    return (
+      <td className={cellClassName} onClick={(event) => event.stopPropagation()}>
+        <TagTypeaheadEditor
+          compact
+          disabled={isSaving}
+          tags={parseProductTagsValue(editValue)}
+          suggestions={tagSuggestions}
+          placeholder="Search tags"
+          onChange={(nextTags) => onTagsChange(serializeProductTags(nextTags))}
+          onCommit={onCommit}
+          onCancel={onCancel}
+        />
+      </td>
+    );
+  }
+
+  return (
+    <td
+      className={cellClassName}
+      title="Double-click to edit tags"
+      onDoubleClick={(event) => {
+        event.stopPropagation();
+        onStartEdit();
+      }}
+    >
+      <div className="product-tag-tags">
+        {productTags.length > 0 ? (
+          productTags.map((tag) => (
+            <span key={tag} className="product-tag-pill">
+              {tag}
+            </span>
+          ))
+        ) : (
+          <span className="product-tag-pill-empty">—</span>
+        )}
+      </div>
+    </td>
+  );
+}
+
 function ProductInlineSelectCell({
   className,
   display,
@@ -3281,6 +3493,7 @@ function ProductTableRow({
   product,
   categories,
   pricingGroups,
+  tagSuggestions,
   inlineEdit,
   savingCellKey,
   onStartEdit,
@@ -3295,6 +3508,7 @@ function ProductTableRow({
   product: Product;
   categories: ProductCategory[];
   pricingGroups: string[];
+  tagSuggestions: string[];
   inlineEdit: { productId: string; column: ProductInlineColumn; value: string } | null;
   savingCellKey: string | null;
   onStartEdit: (product: Product, column: ProductInlineColumn) => void;
@@ -3426,22 +3640,16 @@ function ProductTableRow({
         ]}
         onSelect={(value) => onSelectFieldChange("pricing_group_id", value)}
       />
-      <ProductEditableCell
-        {...cellProps("tags")}
-        className="column-tags"
-        display={
-          <div className="product-tag-tags">
-            {(product.tags ?? []).length > 0 ? (
-              (product.tags ?? []).map((tag) => (
-                <span key={`${product.id}-tag-${tag}`} className="product-tag-pill">
-                  {tag}
-                </span>
-              ))
-            ) : (
-              <span className="product-tag-pill-empty">—</span>
-            )}
-          </div>
-        }
+      <ProductTagsInlineCell
+        productTags={normalizeTagList(product.tags ?? [])}
+        tagSuggestions={tagSuggestions}
+        editValue={inlineEdit?.productId === product.id && inlineEdit.column === "tags" ? inlineEdit.value : ""}
+        isEditing={isEditingColumn("tags")}
+        isSaving={isSavingColumn("tags")}
+        onStartEdit={() => onStartEdit(product, "tags")}
+        onTagsChange={onEditChange}
+        onCommit={onCommitEdit}
+        onCancel={onCancelEdit}
       />
       <ProductInlineSelectCell
         {...cellProps("active")}
