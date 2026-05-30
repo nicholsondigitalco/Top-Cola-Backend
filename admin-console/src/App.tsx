@@ -27,6 +27,33 @@ import type {
 
 const API_BASE_DEFAULT = "http://localhost:4000";
 type AdminRole = "orders" | "full";
+const ADMIN_SESSION_KEY = "top-cola-admin-session";
+
+interface AdminSession {
+  token: string;
+  role: AdminRole;
+}
+
+const readAdminSession = (): AdminSession | null => {
+  try {
+    const raw = localStorage.getItem(ADMIN_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as AdminSession;
+    if (!parsed.token || (parsed.role !== "orders" && parsed.role !== "full")) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+const writeAdminSession = (session: AdminSession | null): void => {
+  if (!session) {
+    localStorage.removeItem(ADMIN_SESSION_KEY);
+    return;
+  }
+  localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify(session));
+};
+
 type AdminTab = "products" | "promos" | "rules" | "categories" | "settings";
 const ADMIN_TABS: { id: AdminTab; label: string }[] = [
   { id: "products", label: "Products" },
@@ -435,8 +462,8 @@ const getCategoryTagStyle = (categorySlug?: string) => {
 export function App() {
   const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? API_BASE_DEFAULT;
   const [password, setPassword] = useState("");
-  const [token, setToken] = useState<string | null>(null);
-  const [adminRole, setAdminRole] = useState<AdminRole | null>(null);
+  const [token, setToken] = useState<string | null>(() => readAdminSession()?.token ?? null);
+  const [adminRole, setAdminRole] = useState<AdminRole | null>(() => readAdminSession()?.role ?? null);
   const [status, setStatus] = useState("Sign in to continue");
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
@@ -632,6 +659,27 @@ export function App() {
   }, [token, adminRole]);
 
   useEffect(() => {
+    const syncSessionFromStorage = (event: StorageEvent) => {
+      if (event.key !== ADMIN_SESSION_KEY) return;
+      if (!event.newValue) {
+        setToken(null);
+        setAdminRole(null);
+        return;
+      }
+      try {
+        const session = JSON.parse(event.newValue) as AdminSession;
+        if (!session.token || (session.role !== "orders" && session.role !== "full")) return;
+        setToken(session.token);
+        setAdminRole(session.role);
+      } catch {
+        // Ignore malformed session payloads from other tabs.
+      }
+    };
+    window.addEventListener("storage", syncSessionFromStorage);
+    return () => window.removeEventListener("storage", syncSessionFromStorage);
+  }, []);
+
+  useEffect(() => {
     if (!token || adminRole !== "full") return;
     if (adminTab === "products" || adminTab === "categories") {
       void loadCategories();
@@ -649,6 +697,7 @@ export function App() {
       });
       setAdminRole(result.role);
       setToken(result.token);
+      writeAdminSession({ token: result.token, role: result.role });
       setPassword("");
       setStatus("Logged in");
     } catch (err) {
@@ -660,6 +709,7 @@ export function App() {
   };
 
   const logout = () => {
+    writeAdminSession(null);
     setToken(null);
     setAdminRole(null);
     setProducts([]);
