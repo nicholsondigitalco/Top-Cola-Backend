@@ -12,10 +12,12 @@ import {
 } from "../../middleware/adminAuth.js";
 import {
   catalogRepository,
+  copyTemplateImagesToProduct,
   notificationEmailRepository,
   orderRepository,
   orderSettingsRepository,
   productImageRepository,
+  productTemplateImageRepository,
   pricingGroupRepository,
   pricingRepository,
   promoRepository
@@ -33,6 +35,8 @@ import {
   PricingRuleCreateSchema,
   PricingRuleUpdateSchema,
   ProductCreateSchema,
+  ProductTemplateCreateSchema,
+  ProductTemplateUpdateSchema,
   ProductUpdateSchema,
   PromoCreateSchema,
   PromoUpdateSchema,
@@ -85,6 +89,202 @@ adminRouter.use(enforceAdminTier);
 adminRouter.get("/admin/products", async (_req, res, next) => {
   try {
     res.json({ products: await catalogRepository.listProducts({}) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.get("/admin/product-templates", async (_req, res, next) => {
+  try {
+    res.json({ productTemplates: await catalogRepository.listProductTemplates() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.post("/admin/product-templates", async (req, res, next) => {
+  try {
+    const payload = ProductTemplateCreateSchema.parse(req.body);
+    const productTemplate = await catalogRepository.createProductTemplate({
+      template_name: payload.templateName,
+      sku: payload.sku,
+      name: payload.name,
+      short_description: payload.shortDescription,
+      long_description: payload.longDescription,
+      image_url: payload.imageUrl,
+      base_price: payload.basePrice,
+      cogs_per_unit: payload.cogsPerUnit,
+      category_slug: payload.categorySlug,
+      pricing_group_slug: payload.pricingGroupSlug,
+      variations: payload.variations,
+      tags: payload.tags,
+      active: payload.active,
+      is_starred: payload.isStarred
+    });
+    res.status(201).json({ productTemplate });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.patch("/admin/product-templates/:templateId", async (req, res, next) => {
+  try {
+    const payload = ProductTemplateUpdateSchema.parse(req.body);
+    const productTemplate = await catalogRepository.updateProductTemplate(req.params.templateId, {
+      template_name: payload.templateName,
+      sku: payload.sku,
+      name: payload.name,
+      short_description: payload.shortDescription,
+      long_description: payload.longDescription,
+      image_url: payload.imageUrl,
+      base_price: payload.basePrice,
+      cogs_per_unit: payload.cogsPerUnit,
+      category_slug: payload.categorySlug,
+      pricing_group_slug: payload.pricingGroupSlug,
+      variations: payload.variations,
+      tags: payload.tags,
+      active: payload.active,
+      is_starred: payload.isStarred
+    });
+    res.json({ productTemplate });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.delete("/admin/product-templates/:templateId", async (req, res, next) => {
+  try {
+    await catalogRepository.deleteProductTemplate(req.params.templateId);
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.get("/admin/product-templates/:templateId/images", async (req, res, next) => {
+  try {
+    const templateId = String(req.params.templateId);
+    const images = await productTemplateImageRepository.listByTemplateId(templateId);
+    res.json({ images });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.post(
+  "/admin/product-templates/:templateId/images",
+  upload.array("images", 12),
+  async (req, res, next) => {
+    try {
+      const templateId = String(req.params.templateId);
+      const template = await catalogRepository.getProductTemplateById(templateId);
+      if (!template) {
+        res.status(404).json({ error: "Template not found." });
+        return;
+      }
+
+      const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+      if (files.length === 0) {
+        res.status(400).json({ error: "Please upload at least one image." });
+        return;
+      }
+
+      const existing = await productTemplateImageRepository.listByTemplateId(templateId);
+      let nextSortOrder =
+        existing.length > 0 ? Math.max(...existing.map((image) => image.sort_order)) + 1 : 0;
+      const created = [];
+      let selectedPrimaryUrl: string | null = null;
+
+      for (const [index, file] of files.entries()) {
+        const ext = file.mimetype.split("/")[1] ?? "jpg";
+        const imageId = randomUUID();
+        const storagePath = `templates/${templateId}/${imageId}.${ext}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from(PRODUCT_IMAGE_BUCKET)
+          .upload(storagePath, file.buffer, {
+            contentType: file.mimetype,
+            upsert: false
+          });
+        if (uploadError) throw uploadError;
+
+        const {
+          data: { publicUrl }
+        } = supabase.storage.from(PRODUCT_IMAGE_BUCKET).getPublicUrl(storagePath);
+        const isPrimary = existing.length === 0 && index === 0;
+        const image = await productTemplateImageRepository.create({
+          template_id: templateId,
+          storage_path: storagePath,
+          image_url: publicUrl,
+          sort_order: nextSortOrder,
+          is_primary: isPrimary
+        });
+        if (isPrimary) {
+          selectedPrimaryUrl = image.image_url;
+        }
+        nextSortOrder += 1;
+        created.push(image);
+      }
+
+      if (selectedPrimaryUrl) {
+        await productTemplateImageRepository.setTemplatePrimaryImage(templateId, selectedPrimaryUrl);
+      }
+
+      res.status(201).json({ images: created });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+adminRouter.patch("/admin/product-templates/:templateId/images/:imageId/primary", async (req, res, next) => {
+  try {
+    const templateId = String(req.params.templateId);
+    const imageId = String(req.params.imageId);
+    const image = await productTemplateImageRepository.getById(templateId, imageId);
+    if (!image) {
+      res.status(404).json({ error: "Image not found." });
+      return;
+    }
+
+    await productTemplateImageRepository.setPrimary(templateId, imageId);
+    await productTemplateImageRepository.setTemplatePrimaryImage(templateId, image.image_url);
+    const images = await productTemplateImageRepository.listByTemplateId(templateId);
+    res.json({ images });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.delete("/admin/product-templates/:templateId/images/:imageId", async (req, res, next) => {
+  try {
+    const templateId = String(req.params.templateId);
+    const imageId = String(req.params.imageId);
+    const image = await productTemplateImageRepository.getById(templateId, imageId);
+    if (!image) {
+      res.status(404).json({ error: "Image not found." });
+      return;
+    }
+
+    const { error: storageError } = await supabase.storage
+      .from(PRODUCT_IMAGE_BUCKET)
+      .remove([image.storage_path]);
+    if (storageError) throw storageError;
+
+    await productTemplateImageRepository.delete(templateId, imageId);
+    const remaining = await productTemplateImageRepository.listByTemplateId(templateId);
+    if (remaining.length === 0) {
+      await productTemplateImageRepository.setTemplatePrimaryImage(templateId, null);
+      res.status(204).send();
+      return;
+    }
+
+    const primary = remaining.find((item) => item.is_primary) ?? remaining[0];
+    if (!primary.is_primary) {
+      await productTemplateImageRepository.setPrimary(templateId, primary.id);
+    }
+    await productTemplateImageRepository.setTemplatePrimaryImage(templateId, primary.image_url);
+    res.status(204).send();
   } catch (error) {
     next(error);
   }
@@ -172,7 +372,11 @@ adminRouter.post("/admin/products", async (req, res, next) => {
       active: payload.active,
       is_starred: payload.isStarred
     });
-    res.status(201).json({ product });
+    if (payload.templateId) {
+      await copyTemplateImagesToProduct(payload.templateId, product.id, PRODUCT_IMAGE_BUCKET);
+    }
+    const refreshedProduct = await catalogRepository.getProductById(product.id);
+    res.status(201).json({ product: refreshedProduct ?? product });
   } catch (error) {
     next(error);
   }

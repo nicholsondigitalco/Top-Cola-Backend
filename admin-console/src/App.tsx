@@ -1,4 +1,17 @@
-import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Dispatch,
+  FormEvent,
+  KeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+  SetStateAction,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
+import { createPortal } from "react-dom";
 import { BrowserRouter, NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { ApiClient } from "./api";
 import {
@@ -23,6 +36,7 @@ import type {
   ProductImage,
   ProductVariation,
   ProductCategory,
+  ProductTemplate,
   PromoCode
 } from "./types";
 
@@ -70,7 +84,15 @@ const STATUS_LABELS: Record<OrderRecord["status"], string> = {
   complete: "Complete",
   cancelled: "Cancelled"
 };
-type AddModalKind = "product" | "promo" | "rule" | "category" | "pricing-group" | null;
+type AddModalKind =
+  | "product"
+  | "product-template-picker"
+  | "product-template"
+  | "promo"
+  | "rule"
+  | "category"
+  | "pricing-group"
+  | null;
 type OrderDateFilter = "today" | "yesterday" | "last7" | "all";
 interface ProductDraft {
   sku: string;
@@ -84,6 +106,10 @@ interface ProductDraft {
   categorySlug: string;
   pricingGroupSlug: string;
   active: boolean;
+}
+
+interface ProductTemplateDraft extends ProductDraft {
+  templateName: string;
 }
 
 interface PendingProductImage {
@@ -113,6 +139,17 @@ const EMPTY_PRODUCT_DRAFT: ProductDraft = {
   pricingGroupSlug: "",
   active: true
 };
+
+const EMPTY_PRODUCT_TEMPLATE_DRAFT: ProductTemplateDraft = {
+  ...EMPTY_PRODUCT_DRAFT,
+  templateName: ""
+};
+
+function preventEnterFormSubmit(event: KeyboardEvent<HTMLFormElement>) {
+  if (event.key !== "Enter") return;
+  if (event.target instanceof HTMLTextAreaElement) return;
+  event.preventDefault();
+}
 
 const normalizeVariationId = (value: string): string =>
   value
@@ -471,6 +508,7 @@ export function App() {
   const [isBusy, setIsBusy] = useState(false);
 
   const [products, setProducts] = useState<Product[]>([]);
+  const [productTemplates, setProductTemplates] = useState<ProductTemplate[]>([]);
   const [categories, setCategories] = useState<ProductCategory[]>([]);
   const [pricingGroups, setPricingGroups] = useState<PricingGroup[]>([]);
   const [promos, setPromos] = useState<PromoCode[]>([]);
@@ -495,6 +533,7 @@ export function App() {
   } | null>(null);
   const [productInlineSaving, setProductInlineSaving] = useState<string | null>(null);
   const [productStarSaving, setProductStarSaving] = useState<string | null>(null);
+  const [productActiveSaving, setProductActiveSaving] = useState<string | null>(null);
   const [promoInlineEdit, setPromoInlineEdit] = useState<{
     promoId: string;
     column: PromoInlineColumn;
@@ -514,8 +553,20 @@ export function App() {
   const [adminTab, setAdminTab] = useState<AdminTab>("products");
 
   const [productDraft, setProductDraft] = useState<ProductDraft>(EMPTY_PRODUCT_DRAFT);
+  const [templateDraft, setTemplateDraft] = useState<ProductTemplateDraft>(EMPTY_PRODUCT_TEMPLATE_DRAFT);
+  const [templateVariationsDraft, setTemplateVariationsDraft] = useState<ProductVariation[]>([]);
+  const [templateTagsDraft, setTemplateTagsDraft] = useState<string[]>([]);
+  const [templateVariationInputValue, setTemplateVariationInputValue] = useState("");
+  const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
+  const [templateImages, setTemplateImages] = useState<ProductImage[]>([]);
+  const [pendingTemplateImages, setPendingTemplateImages] = useState<PendingProductImage[]>([]);
+  const [isUploadingTemplateImages, setIsUploadingTemplateImages] = useState(false);
+  const [isDragOverTemplateImageZone, setIsDragOverTemplateImageZone] = useState(false);
+  const [appliedProductTemplate, setAppliedProductTemplate] = useState<ProductTemplate | null>(null);
   const [productVariationsDraft, setProductVariationsDraft] = useState<ProductVariation[]>([]);
   const [productTagsDraft, setProductTagsDraft] = useState<string[]>([]);
+  const productInlineEditRef = useRef(productInlineEdit);
+  productInlineEditRef.current = productInlineEdit;
   const [variationInputValue, setVariationInputValue] = useState("");
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
   const [productImages, setProductImages] = useState<ProductImage[]>([]);
@@ -586,6 +637,18 @@ export function App() {
     }
   };
 
+  const loadProductTemplates = async (showError = false) => {
+    if (!token) return;
+    try {
+      const result = await client.request<{ productTemplates: ProductTemplate[] }>("/admin/product-templates");
+      setProductTemplates(result.productTemplates);
+    } catch (err) {
+      if (showError) {
+        setError((err as Error).message);
+      }
+    }
+  };
+
   const loadPricingGroups = async (showError = false) => {
     if (!token) return;
     try {
@@ -630,7 +693,9 @@ export function App() {
     try {
       await loadCategories();
       await loadPricingGroups();
-      const [productsRes, promosRes, rulesRes, ordersRes, metricsRes, settingsRes, notificationEmailsRes] = await Promise.all([
+      await loadProductTemplates();
+      const [productsRes, promosRes, rulesRes, ordersRes, metricsRes, settingsRes, notificationEmailsRes] =
+        await Promise.all([
         client.request<{ products: Product[] }>("/admin/products"),
         client.request<{ promos: PromoCode[] }>("/admin/promos"),
         client.request<{ pricingRules: PricingRule[] }>("/admin/pricing-rules"),
@@ -757,7 +822,7 @@ export function App() {
     setPendingProductImages([]);
   };
 
-  const openCreateProductModal = () => {
+  const resetProductCreateDraft = () => {
     setEditingProductId(null);
     setProductDraft(EMPTY_PRODUCT_DRAFT);
     setProductVariationsDraft([]);
@@ -765,7 +830,156 @@ export function App() {
     setProductImages([]);
     clearPendingProductImages();
     setVariationInputValue("");
+    setAppliedProductTemplate(null);
+  };
+
+  const clearPendingTemplateImages = (images: PendingProductImage[] = pendingTemplateImages) => {
+    for (const image of images) {
+      URL.revokeObjectURL(image.previewUrl);
+    }
+    setPendingTemplateImages([]);
+  };
+
+  const applyProductTemplateToDraft = (template: ProductTemplate) => {
+    setProductDraft({
+      sku: template.sku ?? "",
+      name: template.name,
+      shortDescription: template.short_description ?? "",
+      longDescription: template.long_description ?? "",
+      basePrice: roundUnitPrice(Number(template.base_price)).toFixed(3),
+      basePriceMethod: "unit",
+      cogsPrice: roundUnitPrice(Number(template.cogs_per_unit ?? 0)).toFixed(3),
+      cogsPriceMethod: "unit",
+      categorySlug: template.category_slug,
+      pricingGroupSlug: template.pricing_group_slug ?? "",
+      active: template.active
+    });
+    setAppliedProductTemplate(template);
+    setProductVariationsDraft(
+      normalizeVariationList((template.variations ?? []).map((variation) => variation.name))
+    );
+    setProductTagsDraft(normalizeTagList(template.tags ?? []));
+    setProductImages([]);
+    setVariationInputValue("");
+  };
+
+  const loadTemplateImagesAsPending = async (templateId: string) => {
+    try {
+      const result = await client.request<{ images: ProductImage[] }>(
+        `/admin/product-templates/${templateId}/images`
+      );
+      const sorted = [...result.images].sort((a, b) => {
+        if (a.is_primary === b.is_primary) return a.sort_order - b.sort_order;
+        return a.is_primary ? -1 : 1;
+      });
+      if (sorted.length === 0) return;
+
+      clearPendingProductImages();
+      const hasPrimary = sorted.some((image) => image.is_primary);
+      const pending: PendingProductImage[] = [];
+      for (const [index, image] of sorted.entries()) {
+        const response = await fetch(image.image_url);
+        if (!response.ok) {
+          throw new Error(`Failed to load template image (${response.status}).`);
+        }
+        const blob = await response.blob();
+        const extension = blob.type.split("/")[1] || "jpg";
+        pending.push({
+          id: crypto.randomUUID(),
+          file: new File([blob], `template-${image.id}.${extension}`, {
+            type: blob.type || "image/jpeg"
+          }),
+          previewUrl: URL.createObjectURL(blob),
+          isPrimary: image.is_primary || (!hasPrimary && index === 0)
+        });
+      }
+      setPendingProductImages(pending);
+    } catch {
+      clearPendingProductImages();
+    }
+  };
+
+  const openProductTemplatePicker = () => {
+    cancelProductInlineEdit();
+    resetProductCreateDraft();
+    setActiveAddModal("product-template-picker");
+  };
+
+  const startProductWithoutTemplate = () => {
+    resetProductCreateDraft();
     setActiveAddModal("product");
+  };
+
+  const startProductFromTemplate = (template: ProductTemplate) => {
+    cancelProductInlineEdit();
+    setEditingProductId(null);
+    applyProductTemplateToDraft(template);
+    void loadTemplateImagesAsPending(template.id);
+    setActiveAddModal("product");
+  };
+
+  const openCreateProductTemplateModal = () => {
+    cancelProductInlineEdit();
+    setEditingTemplateId(null);
+    setTemplateDraft(EMPTY_PRODUCT_TEMPLATE_DRAFT);
+    setTemplateVariationsDraft([]);
+    setTemplateTagsDraft([]);
+    setTemplateVariationInputValue("");
+    setTemplateImages([]);
+    clearPendingTemplateImages();
+    setActiveAddModal("product-template");
+  };
+
+  const openEditProductTemplateModal = async (template: ProductTemplate) => {
+    cancelProductInlineEdit();
+    const latestTemplate = productTemplates.find((entry) => entry.id === template.id) ?? template;
+    setEditingTemplateId(latestTemplate.id);
+    setTemplateDraft({
+      templateName: latestTemplate.template_name,
+      sku: latestTemplate.sku ?? "",
+      name: latestTemplate.name,
+      shortDescription: latestTemplate.short_description ?? "",
+      longDescription: latestTemplate.long_description ?? "",
+      basePrice: roundUnitPrice(Number(latestTemplate.base_price)).toFixed(3),
+      basePriceMethod: "unit",
+      cogsPrice: roundUnitPrice(Number(latestTemplate.cogs_per_unit ?? 0)).toFixed(3),
+      cogsPriceMethod: "unit",
+      categorySlug: latestTemplate.category_slug,
+      pricingGroupSlug: latestTemplate.pricing_group_slug ?? "",
+      active: latestTemplate.active
+    });
+    setTemplateVariationsDraft(
+      normalizeVariationList((latestTemplate.variations ?? []).map((variation) => variation.name))
+    );
+    setTemplateTagsDraft(normalizeTagList(latestTemplate.tags ?? []));
+    setTemplateVariationInputValue("");
+    clearPendingTemplateImages();
+    await loadTemplateImages(latestTemplate.id);
+    setActiveAddModal("product-template");
+  };
+
+  const closeProductTemplateModal = () => {
+    setEditingTemplateId(null);
+    setTemplateDraft(EMPTY_PRODUCT_TEMPLATE_DRAFT);
+    setTemplateVariationsDraft([]);
+    setTemplateTagsDraft([]);
+    setTemplateVariationInputValue("");
+    setTemplateImages([]);
+    clearPendingTemplateImages();
+    setActiveAddModal(null);
+  };
+
+  const loadTemplateImages = async (templateId: string) => {
+    const result = await client.request<{ images: ProductImage[] }>(`/admin/product-templates/${templateId}/images`);
+    const sorted = [...result.images].sort((a, b) => {
+      if (a.is_primary === b.is_primary) return a.sort_order - b.sort_order;
+      return a.is_primary ? -1 : 1;
+    });
+    setTemplateImages(sorted);
+  };
+
+  const openCreateProductModal = () => {
+    openProductTemplatePicker();
   };
 
   const loadProductImages = async (productId: string) => {
@@ -778,26 +992,133 @@ export function App() {
   };
 
   const openEditProductModal = async (product: Product) => {
-    setEditingProductId(product.id);
+    cancelProductInlineEdit();
+    const latestProduct = products.find((entry) => entry.id === product.id) ?? product;
+    setEditingProductId(latestProduct.id);
     setProductDraft({
-      sku: product.sku ?? "",
-      name: product.name,
-      shortDescription: product.short_description ?? "",
-      longDescription: product.long_description ?? "",
-      basePrice: roundUnitPrice(Number(product.base_price)).toFixed(3),
+      sku: latestProduct.sku ?? "",
+      name: latestProduct.name,
+      shortDescription: latestProduct.short_description ?? "",
+      longDescription: latestProduct.long_description ?? "",
+      basePrice: roundUnitPrice(Number(latestProduct.base_price)).toFixed(3),
       basePriceMethod: "unit",
-      cogsPrice: roundUnitPrice(Number(product.cogs_per_unit ?? 0)).toFixed(3),
+      cogsPrice: roundUnitPrice(Number(latestProduct.cogs_per_unit ?? 0)).toFixed(3),
       cogsPriceMethod: "unit",
-      categorySlug: product.category_slug,
-      pricingGroupSlug: product.pricing_group_slug ?? "",
-      active: product.active
+      categorySlug: latestProduct.category_slug,
+      pricingGroupSlug: latestProduct.pricing_group_slug ?? "",
+      active: latestProduct.active
     });
-    setProductVariationsDraft(normalizeVariationList((product.variations ?? []).map((variation) => variation.name)));
-    setProductTagsDraft(normalizeTagList(product.tags ?? []));
+    setProductVariationsDraft(
+      normalizeVariationList((latestProduct.variations ?? []).map((variation) => variation.name))
+    );
+    setProductTagsDraft(normalizeTagList(latestProduct.tags ?? []));
     clearPendingProductImages();
-    await loadProductImages(product.id);
+    await loadProductImages(latestProduct.id);
     setVariationInputValue("");
     setActiveAddModal("product");
+  };
+
+  const addTemplateVariationTag = () => {
+    const nextName = templateVariationInputValue.trim();
+    if (!nextName) return;
+    setTemplateVariationsDraft((current) =>
+      normalizeVariationList([...current.map((variation) => variation.name), nextName])
+    );
+    setTemplateVariationInputValue("");
+  };
+
+  const removeTemplateVariationTag = (variationId: string) => {
+    setTemplateVariationsDraft((current) => current.filter((variation) => variation.id !== variationId));
+  };
+
+  const saveProductTemplate = async (event: FormEvent) => {
+    event.preventDefault();
+    setIsBusy(true);
+    setError(null);
+    try {
+      const toUnitValue = (rawValue: string, method: "unit" | "weighted", label: string): number => {
+        const parsed = Number(rawValue);
+        if (!Number.isFinite(parsed) || parsed < 0) {
+          throw new Error(`${label} must be a non-negative number.`);
+        }
+        const unitValue = method === "weighted" ? roundWeightedPrice(parsed) / 454 : roundUnitPrice(parsed);
+        return roundUnitPrice(unitValue);
+      };
+      const basePrice = toUnitValue(templateDraft.basePrice, templateDraft.basePriceMethod, "Base price");
+      const cogsPerUnit = toUnitValue(templateDraft.cogsPrice, templateDraft.cogsPriceMethod, "COGS");
+      const pendingImagesToUpload = [...pendingTemplateImages];
+      const payload = {
+        templateName: templateDraft.templateName,
+        sku: templateDraft.sku || undefined,
+        name: templateDraft.name,
+        shortDescription: templateDraft.shortDescription,
+        longDescription: templateDraft.longDescription,
+        basePrice,
+        cogsPerUnit,
+        categorySlug: templateDraft.categorySlug,
+        pricingGroupSlug: templateDraft.pricingGroupSlug || null,
+        variations: templateVariationsDraft,
+        tags: templateTagsDraft,
+        active: templateDraft.active
+      };
+
+      if (editingTemplateId) {
+        await client.request<{ productTemplate: ProductTemplate }>(
+          `/admin/product-templates/${editingTemplateId}`,
+          "PATCH",
+          payload
+        );
+        if (pendingImagesToUpload.length > 0) {
+          setIsUploadingTemplateImages(true);
+          try {
+            await uploadPendingImagesToTemplate(editingTemplateId, pendingImagesToUpload);
+          } finally {
+            setIsUploadingTemplateImages(false);
+          }
+        }
+      } else {
+        const result = await client.request<{ productTemplate: ProductTemplate }>("/admin/product-templates", "POST", payload);
+        if (pendingImagesToUpload.length > 0) {
+          setIsUploadingTemplateImages(true);
+          try {
+            await uploadPendingImagesToTemplate(result.productTemplate.id, pendingImagesToUpload);
+          } finally {
+            setIsUploadingTemplateImages(false);
+          }
+        }
+      }
+      clearPendingTemplateImages(pendingImagesToUpload);
+      closeProductTemplateModal();
+      await loadProductTemplates(true);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const deleteProductTemplate = async (template: ProductTemplate) => {
+    if (!window.confirm(`Delete template "${template.template_name}"? This cannot be undone.`)) return;
+    setIsBusy(true);
+    setError(null);
+    try {
+      await client.request(`/admin/product-templates/${template.id}`, "DELETE");
+      setProductTemplates((current) => current.filter((entry) => entry.id !== template.id));
+      if (editingTemplateId === template.id) {
+        closeProductTemplateModal();
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const deleteProductTemplateFromModal = async () => {
+    if (!editingTemplateId) return;
+    const template = productTemplates.find((entry) => entry.id === editingTemplateId);
+    if (!template) return;
+    await deleteProductTemplate(template);
   };
 
   const addVariationTag = () => {
@@ -821,6 +1142,127 @@ export function App() {
     if (currentMode === nextMode) return formatDraftPrice(safeValue, nextMode);
     const converted = currentMode === "unit" ? safeValue * 454 : safeValue / 454;
     return formatDraftPrice(converted, nextMode);
+  };
+
+  const addPendingTemplateImages = (files: File[]) => {
+    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length === 0) return;
+    setPendingTemplateImages((current) => {
+      const shouldSetPrimary = current.length === 0;
+      const added = imageFiles.map((file, index) => ({
+        id: crypto.randomUUID(),
+        file,
+        previewUrl: URL.createObjectURL(file),
+        isPrimary: shouldSetPrimary && index === 0
+      }));
+      return [...current, ...added];
+    });
+  };
+
+  const removePendingTemplateImage = (imageId: string) => {
+    setPendingTemplateImages((current) => {
+      const target = current.find((image) => image.id === imageId);
+      if (target) URL.revokeObjectURL(target.previewUrl);
+      const remaining = current.filter((image) => image.id !== imageId);
+      if (remaining.length > 0 && !remaining.some((image) => image.isPrimary)) {
+        remaining[0] = { ...remaining[0], isPrimary: true };
+      }
+      return remaining;
+    });
+  };
+
+  const setPendingTemplateImageAsPrimary = (imageId: string) => {
+    setPendingTemplateImages((current) =>
+      current.map((image) => ({ ...image, isPrimary: image.id === imageId }))
+    );
+  };
+
+  const handleTemplateImageFiles = (files: File[]) => {
+    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length === 0) return;
+    if (editingTemplateId) {
+      void uploadTemplateImages(imageFiles);
+      return;
+    }
+    addPendingTemplateImages(imageFiles);
+  };
+
+  const uploadTemplateImages = async (files: File[]) => {
+    if (!editingTemplateId || files.length === 0) return;
+    setIsUploadingTemplateImages(true);
+    setError(null);
+    try {
+      const formData = new FormData();
+      for (const file of files) {
+        formData.append("images", file);
+      }
+      await client.requestFormData<{ images: ProductImage[] }>(
+        `/admin/product-templates/${editingTemplateId}/images`,
+        "POST",
+        formData
+      );
+      await loadTemplateImages(editingTemplateId);
+      await loadProductTemplates(true);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsUploadingTemplateImages(false);
+      setIsDragOverTemplateImageZone(false);
+    }
+  };
+
+  const markTemplateImageAsPrimary = async (imageId: string) => {
+    if (!editingTemplateId) return;
+    setIsBusy(true);
+    setError(null);
+    try {
+      await client.request<{ images: ProductImage[] }>(
+        `/admin/product-templates/${editingTemplateId}/images/${imageId}/primary`,
+        "PATCH"
+      );
+      await loadTemplateImages(editingTemplateId);
+      await loadProductTemplates(true);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const deleteTemplateImage = async (imageId: string) => {
+    if (!editingTemplateId) return;
+    setIsBusy(true);
+    setError(null);
+    try {
+      await client.request(`/admin/product-templates/${editingTemplateId}/images/${imageId}`, "DELETE");
+      await loadTemplateImages(editingTemplateId);
+      await loadProductTemplates(true);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const uploadPendingImagesToTemplate = async (templateId: string, pending: PendingProductImage[]) => {
+    if (pending.length === 0) return;
+    const formData = new FormData();
+    for (const image of pending) {
+      formData.append("images", image.file);
+    }
+    const result = await client.requestFormData<{ images: ProductImage[] }>(
+      `/admin/product-templates/${templateId}/images`,
+      "POST",
+      formData
+    );
+    const primaryIndex = pending.findIndex((image) => image.isPrimary);
+    const uploadedPrimary = primaryIndex >= 0 ? result.images[primaryIndex] : undefined;
+    if (uploadedPrimary && !uploadedPrimary.is_primary) {
+      await client.request<{ images: ProductImage[] }>(
+        `/admin/product-templates/${templateId}/images/${uploadedPrimary.id}/primary`,
+        "PATCH"
+      );
+    }
   };
 
   const addPendingProductImages = (files: File[]) => {
@@ -952,6 +1394,7 @@ export function App() {
     setProductVariationsDraft([]);
     setProductTagsDraft([]);
     setProductDraft(EMPTY_PRODUCT_DRAFT);
+    setAppliedProductTemplate(null);
     setActiveAddModal(null);
   };
 
@@ -988,6 +1431,7 @@ export function App() {
       };
       const basePrice = toUnitValue(productDraft.basePrice, productDraft.basePriceMethod, "Base price");
       const cogsPerUnit = toUnitValue(productDraft.cogsPrice, productDraft.cogsPriceMethod, "COGS");
+      const pendingImagesToUpload = [...pendingProductImages];
       const payload = {
         sku: productDraft.sku || undefined,
         name: productDraft.name,
@@ -999,13 +1443,14 @@ export function App() {
         pricingGroupSlug: productDraft.pricingGroupSlug || null,
         variations: productVariationsDraft,
         tags: productTagsDraft,
-        active: productDraft.active
+        active: productDraft.active,
+        templateId: pendingImagesToUpload.length === 0 ? appliedProductTemplate?.id : undefined,
+        isStarred: appliedProductTemplate?.is_starred
       };
 
       if (editingProductId) {
         await client.request<{ product: Product }>(`/admin/products/${editingProductId}`, "PATCH", payload);
       } else {
-        const pendingImagesToUpload = [...pendingProductImages];
         const result = await client.request<{ product: Product }>("/admin/products", "POST", payload);
         if (pendingImagesToUpload.length > 0) {
           setIsUploadingImages(true);
@@ -1025,6 +1470,7 @@ export function App() {
       setProductImages([]);
       setPendingProductImages([]);
       setVariationInputValue("");
+      setAppliedProductTemplate(null);
       setActiveAddModal(null);
       await loadAll();
     } catch (err) {
@@ -1046,23 +1492,33 @@ export function App() {
     setProductInlineEdit(null);
   };
 
-  const commitProductInlineEdit = async () => {
-    if (!productInlineEdit) return;
-    const product = products.find((entry) => entry.id === productInlineEdit.productId);
+  const handleProductInlineTagsChange = (update: SetStateAction<string[]>) => {
+    setProductInlineEdit((current) => {
+      if (!current || current.column !== "tags") return current;
+      const currentTags = parseProductTagsValue(current.value);
+      const nextTags = typeof update === "function" ? update(currentTags) : update;
+      return { ...current, value: serializeProductTags(nextTags) };
+    });
+  };
+
+  const commitProductInlineEdit = useCallback(async () => {
+    const inlineEdit = productInlineEditRef.current;
+    if (!inlineEdit) return;
+    const product = products.find((entry) => entry.id === inlineEdit.productId);
     if (!product) {
       setProductInlineEdit(null);
       return;
     }
 
-    const originalValue = getProductCellEditValue(product, productInlineEdit.column);
-    if (productInlineEdit.value === originalValue) {
+    const originalValue = getProductCellEditValue(product, inlineEdit.column);
+    if (inlineEdit.value === originalValue) {
       setProductInlineEdit(null);
       return;
     }
 
-    await saveProductInlineField(product, productInlineEdit.column, productInlineEdit.value);
+    await saveProductInlineField(product, inlineEdit.column, inlineEdit.value);
     setProductInlineEdit(null);
-  };
+  }, [products]);
 
   const saveProductInlineField = async (
     product: Product,
@@ -1110,6 +1566,22 @@ export function App() {
       setError((err as Error).message);
     } finally {
       setProductStarSaving(null);
+    }
+  };
+
+  const toggleProductActive = async (product: Product, nextActive: boolean) => {
+    if (product.active === nextActive) return;
+    setProductActiveSaving(product.id);
+    setError(null);
+    try {
+      const result = await client.request<{ product: Product }>(`/admin/products/${product.id}`, "PATCH", {
+        active: nextActive
+      });
+      setProducts((current) => current.map((entry) => (entry.id === product.id ? result.product : entry)));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setProductActiveSaving(null);
     }
   };
 
@@ -2000,8 +2472,8 @@ export function App() {
                     <div>
                       <h3>Product Management</h3>
                       <p className="muted product-table-hint">
-                        Double-click editable cells to update inline. Category, pricing group, status, and tags use
-                        dropdown or typeahead on double-click.
+                        Double-click editable cells to update inline. Category, pricing group, and tags use
+                        dropdown or typeahead on double-click. Use the Active checkbox to control catalog visibility.
                       </p>
                     </div>
                     <div className="section-actions">
@@ -2023,7 +2495,10 @@ export function App() {
                         value={productSearch}
                         onChange={(event) => setProductSearch(event.target.value)}
                       />
-                      <button type="button" onClick={openCreateProductModal}>
+                      <button type="button" className="secondary" onClick={openCreateProductTemplateModal}>
+                        Create Template
+                      </button>
+                      <button type="button" onClick={openProductTemplatePicker}>
                         Add Product
                       </button>
                     </div>
@@ -2033,6 +2508,7 @@ export function App() {
                     <thead>
                       <tr>
                         <th className="sticky-col-star product-col-static" aria-label="Starred" />
+                        <th className="sticky-col-active product-col-static">Active</th>
                         <th className="sticky-col-image product-col-static">Image</th>
                         <th className="sticky-col-product product-col-editable">Product</th>
                         <th className="product-col-static">ID</th>
@@ -2048,7 +2524,6 @@ export function App() {
                         <th className="product-col-editable">Category ID</th>
                         <th className="product-col-editable">Pricing Group ID</th>
                         <th className="product-col-editable">Tags</th>
-                        <th className="product-col-editable">Active</th>
                         <th className="product-col-static">Created At</th>
                         <th className="product-col-static">Updated At</th>
                         <th className="column-edit sticky-col-edit product-col-static" aria-label="Edit product" />
@@ -2068,6 +2543,7 @@ export function App() {
                           onEditChange={(value) =>
                             setProductInlineEdit((current) => (current ? { ...current, value } : current))
                           }
+                          onTagsChange={handleProductInlineTagsChange}
                           onCommitEdit={() => void commitProductInlineEdit()}
                           onCancelEdit={cancelProductInlineEdit}
                           onSelectFieldChange={(column, value) =>
@@ -2075,7 +2551,9 @@ export function App() {
                           }
                           onOpenEditModal={() => void openEditProductModal(p)}
                           onToggleStar={() => void toggleProductStar(p)}
+                          onToggleActive={(nextActive) => void toggleProductActive(p, nextActive)}
                           isStarSaving={productStarSaving === p.id}
+                          isActiveSaving={productActiveSaving === p.id}
                         />
                       ))}
                     </tbody>
@@ -2775,12 +3253,450 @@ export function App() {
         </Routes>
 
         <Modal
+          open={activeAddModal === "product-template-picker"}
+          title="Add Product"
+          closeOnBackdropClick={false}
+          onClose={() => setActiveAddModal(null)}
+        >
+          <div className="template-picker">
+            <p className="muted template-picker-intro">
+              Select a template to prefill product defaults, or continue without one.
+            </p>
+            {productTemplates.length > 0 ? (
+              <ul className="template-picker-list">
+                {productTemplates.map((template) => (
+                  <li key={template.id} className="template-picker-row">
+                    <button
+                      type="button"
+                      className="template-picker-option"
+                      onClick={() => startProductFromTemplate(template)}
+                    >
+                      <span className="template-picker-name">{template.template_name}</span>
+                      <span className="template-picker-meta">
+                        {template.category_name}
+                        {template.pricing_group_name ? ` · ${template.pricing_group_name}` : ""}
+                      </span>
+                    </button>
+                    <div className="template-picker-row-actions">
+                      <button
+                        type="button"
+                        className="icon-edit-btn"
+                        aria-label={`Edit ${template.template_name}`}
+                        disabled={isBusy}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void openEditProductTemplateModal(template);
+                        }}
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                          <path d="M4 20h4l10-10-4-4L4 16v4zm12.7-13.3 1.6-1.6a1 1 0 0 1 1.4 0l1.3 1.3a1 1 0 0 1 0 1.4L19.4 9l-2.7-2.3z" />
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-edit-btn icon-delete-btn"
+                        aria-label={`Delete ${template.template_name}`}
+                        disabled={isBusy}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void deleteProductTemplate(template);
+                        }}
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                          <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
+                        </svg>
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="muted">No templates yet. Create one with the Create Template button.</p>
+            )}
+            <div className="actions template-picker-actions">
+              <button type="button" className="secondary" onClick={() => setActiveAddModal(null)}>
+                Cancel
+              </button>
+              <button type="button" onClick={startProductWithoutTemplate}>
+                Continue without template
+              </button>
+            </div>
+          </div>
+        </Modal>
+
+        <Modal
+          open={activeAddModal === "product-template"}
+          title={editingTemplateId ? "Edit Product Template" : "Create Product Template"}
+          size="wide"
+          closeOnBackdropClick={false}
+          onClose={closeProductTemplateModal}
+        >
+          <form
+            onSubmit={saveProductTemplate}
+            onKeyDown={preventEnterFormSubmit}
+            className="product-modal-form"
+          >
+            <Field label="Template name" className="product-modal-full-width">
+              <input
+                required
+                value={templateDraft.templateName}
+                onChange={(e) => setTemplateDraft((p) => ({ ...p, templateName: e.target.value }))}
+                placeholder="e.g. Standard vape pod"
+              />
+            </Field>
+            <Field label="SKU (optional)" className="product-modal-half-width">
+              <input
+                value={templateDraft.sku}
+                onChange={(e) => setTemplateDraft((p) => ({ ...p, sku: e.target.value }))}
+              />
+            </Field>
+            <Field label="Product name" className="product-modal-half-width">
+              <input
+                required
+                value={templateDraft.name}
+                onChange={(e) => setTemplateDraft((p) => ({ ...p, name: e.target.value }))}
+              />
+            </Field>
+            <Field label="Price" className="product-modal-half-width">
+              <div className="variation-editor">
+                <div className="row">
+                  <label className="toggle-inline">
+                    <input
+                      type="checkbox"
+                      checked={templateDraft.basePriceMethod === "unit"}
+                      onChange={() =>
+                        setTemplateDraft((p) => ({
+                          ...p,
+                          basePrice: convertDraftValueBetweenModes(p.basePrice, p.basePriceMethod, "unit"),
+                          basePriceMethod: "unit"
+                        }))
+                      }
+                    />
+                    <span>Unit Price</span>
+                  </label>
+                  <label className="toggle-inline">
+                    <input
+                      type="checkbox"
+                      checked={templateDraft.basePriceMethod === "weighted"}
+                      onChange={() =>
+                        setTemplateDraft((p) => ({
+                          ...p,
+                          basePrice: convertDraftValueBetweenModes(p.basePrice, p.basePriceMethod, "weighted"),
+                          basePriceMethod: "weighted"
+                        }))
+                      }
+                    />
+                    <span>Weighted Price ($ / 454 units)</span>
+                  </label>
+                </div>
+                <input
+                  type="number"
+                  step={templateDraft.basePriceMethod === "weighted" ? "1" : "0.001"}
+                  min="0"
+                  value={templateDraft.basePrice}
+                  onChange={(e) => setTemplateDraft((p) => ({ ...p, basePrice: e.target.value }))}
+                  placeholder={
+                    templateDraft.basePriceMethod === "weighted"
+                      ? "Enter $ per 454g"
+                      : "Enter unit price"
+                  }
+                />
+                <span className="muted">
+                  Stored unit price: $
+                  {roundUnitPrice(
+                    (Number(templateDraft.basePrice) || 0) /
+                      (templateDraft.basePriceMethod === "weighted" ? 454 : 1)
+                  ).toFixed(3)}
+                </span>
+              </div>
+            </Field>
+            <Field label="COGS" className="product-modal-half-width">
+              <div className="variation-editor">
+                <div className="row">
+                  <label className="toggle-inline">
+                    <input
+                      type="checkbox"
+                      checked={templateDraft.cogsPriceMethod === "unit"}
+                      onChange={() =>
+                        setTemplateDraft((p) => ({
+                          ...p,
+                          cogsPrice: convertDraftValueBetweenModes(p.cogsPrice, p.cogsPriceMethod, "unit"),
+                          cogsPriceMethod: "unit"
+                        }))
+                      }
+                    />
+                    <span>Unit COGS</span>
+                  </label>
+                  <label className="toggle-inline">
+                    <input
+                      type="checkbox"
+                      checked={templateDraft.cogsPriceMethod === "weighted"}
+                      onChange={() =>
+                        setTemplateDraft((p) => ({
+                          ...p,
+                          cogsPrice: convertDraftValueBetweenModes(p.cogsPrice, p.cogsPriceMethod, "weighted"),
+                          cogsPriceMethod: "weighted"
+                        }))
+                      }
+                    />
+                    <span>Weighted COGS ($ / 454 units)</span>
+                  </label>
+                </div>
+                <input
+                  type="number"
+                  step={templateDraft.cogsPriceMethod === "weighted" ? "1" : "0.001"}
+                  min="0"
+                  value={templateDraft.cogsPrice}
+                  onChange={(e) => setTemplateDraft((p) => ({ ...p, cogsPrice: e.target.value }))}
+                  placeholder={
+                    templateDraft.cogsPriceMethod === "weighted"
+                      ? "Enter $ per 454g"
+                      : "Enter unit COGS"
+                  }
+                />
+                <span className="muted">
+                  Stored unit COGS: $
+                  {roundUnitPrice(
+                    (Number(templateDraft.cogsPrice) || 0) /
+                      (templateDraft.cogsPriceMethod === "weighted" ? 454 : 1)
+                  ).toFixed(3)}
+                </span>
+              </div>
+            </Field>
+            <Field label="Category" className="product-modal-half-width">
+              <select
+                value={templateDraft.categorySlug}
+                onChange={(e) => setTemplateDraft((p) => ({ ...p, categorySlug: e.target.value }))}
+              >
+                {categories.map((category) => (
+                  <option key={category.id} value={category.slug}>
+                    {category.name} ({category.slug})
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Pricing group" className="product-modal-half-width">
+              <select
+                value={templateDraft.pricingGroupSlug}
+                onChange={(e) => setTemplateDraft((p) => ({ ...p, pricingGroupSlug: e.target.value }))}
+              >
+                <option value="">No volume discount</option>
+                {pricingGroupOptions.map((group) => (
+                  <option key={group.id} value={group.slug}>
+                    {group.name} ({group.slug})
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Short description" className="product-modal-full-width">
+              <textarea
+                value={templateDraft.shortDescription}
+                onChange={(e) => setTemplateDraft((p) => ({ ...p, shortDescription: e.target.value }))}
+              />
+            </Field>
+            <Field label="Long description" className="product-modal-full-width">
+              <textarea
+                value={templateDraft.longDescription}
+                onChange={(e) => setTemplateDraft((p) => ({ ...p, longDescription: e.target.value }))}
+              />
+            </Field>
+            <Field label="Variations (optional)" className="product-modal-full-width">
+              <div className="variation-editor">
+                <div className="variation-tags">
+                  {templateVariationsDraft.length > 0 ? (
+                    templateVariationsDraft.map((variation) => (
+                      <span key={variation.id} className="variation-tag">
+                        {variation.name}
+                        <button
+                          type="button"
+                          className="variation-tag-remove"
+                          onClick={() => removeTemplateVariationTag(variation.id)}
+                          aria-label={`Remove ${variation.name}`}
+                        >
+                          x
+                        </button>
+                      </span>
+                    ))
+                  ) : (
+                    <span className="variation-tag-empty">No variations added yet</span>
+                  )}
+                </div>
+                <div className="variation-entry-row">
+                  <input
+                    placeholder="Type variation name"
+                    value={templateVariationInputValue}
+                    onChange={(e) => setTemplateVariationInputValue(e.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        addTemplateVariationTag();
+                      }
+                    }}
+                  />
+                  <button type="button" className="small-action-btn" onClick={addTemplateVariationTag}>
+                    Add
+                  </button>
+                </div>
+              </div>
+            </Field>
+            <Field label="Tags (optional)" className="product-modal-full-width">
+              <TagTypeaheadEditor
+                tags={templateTagsDraft}
+                resetKey={editingTemplateId ?? "product-template-create"}
+                suggestions={allProductTagSuggestions}
+                onChange={setTemplateTagsDraft}
+                enableBackspaceRemove={false}
+                placeholder="Type to search or add a tag"
+              />
+            </Field>
+            <Field label="Product Images" className="product-modal-full-width">
+              <div className="image-manager">
+                <div
+                  className={`image-dropzone ${isDragOverTemplateImageZone ? "drag-over" : ""}`}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    setIsDragOverTemplateImageZone(true);
+                  }}
+                  onDragLeave={(event) => {
+                    event.preventDefault();
+                    setIsDragOverTemplateImageZone(false);
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setIsDragOverTemplateImageZone(false);
+                    handleTemplateImageFiles(Array.from(event.dataTransfer.files));
+                  }}
+                >
+                  <p>Drag and drop images here</p>
+                  <label className="dropzone-button">
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/*"
+                      onChange={(event) => {
+                        handleTemplateImageFiles(Array.from(event.target.files ?? []));
+                        event.currentTarget.value = "";
+                      }}
+                    />
+                    {isUploadingTemplateImages ? "Uploading..." : "Upload Images"}
+                  </label>
+                </div>
+
+                <div className="image-section">
+                  <h4>Primary Image</h4>
+                  {editingTemplateId ? (
+                    templateImages.find((image) => image.is_primary) ? (
+                      <img
+                        className="primary-image-preview"
+                        src={templateImages.find((image) => image.is_primary)?.image_url}
+                        alt="Primary template"
+                      />
+                    ) : (
+                      <p className="muted">No primary image selected yet.</p>
+                    )
+                  ) : pendingTemplateImages.find((image) => image.isPrimary) ? (
+                    <img
+                      className="primary-image-preview"
+                      src={pendingTemplateImages.find((image) => image.isPrimary)?.previewUrl}
+                      alt="Primary template preview"
+                    />
+                  ) : (
+                    <p className="muted">No primary image selected yet.</p>
+                  )}
+                </div>
+
+                <div className="image-section">
+                  <h4>Gallery Images</h4>
+                  {editingTemplateId ? (
+                    templateImages.length === 0 ? (
+                      <p className="muted">No gallery images yet.</p>
+                    ) : (
+                      <div className="gallery-grid">
+                        {templateImages.map((image) => (
+                          <div key={image.id} className="gallery-item">
+                            <img src={image.image_url} alt="Template gallery" />
+                            <div className="gallery-item-actions">
+                              <button
+                                type="button"
+                                className="small-action-btn secondary"
+                                disabled={isBusy || image.is_primary}
+                                onClick={() => void markTemplateImageAsPrimary(image.id)}
+                              >
+                                {image.is_primary ? "Primary" : "Set Primary"}
+                              </button>
+                              <button
+                                type="button"
+                                className="small-action-btn danger secondary"
+                                disabled={isBusy}
+                                onClick={() => void deleteTemplateImage(image.id)}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  ) : pendingTemplateImages.length === 0 ? (
+                    <p className="muted">No gallery images yet.</p>
+                  ) : (
+                    <div className="gallery-grid">
+                      {pendingTemplateImages.map((image) => (
+                        <div key={image.id} className="gallery-item">
+                          <img src={image.previewUrl} alt="Template gallery preview" />
+                          <div className="gallery-item-actions">
+                            <button
+                              type="button"
+                              className="small-action-btn secondary"
+                              disabled={image.isPrimary}
+                              onClick={() => setPendingTemplateImageAsPrimary(image.id)}
+                            >
+                              {image.isPrimary ? "Primary" : "Set Primary"}
+                            </button>
+                            <button
+                              type="button"
+                              className="small-action-btn danger secondary"
+                              disabled={isBusy}
+                              onClick={() => removePendingTemplateImage(image.id)}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </Field>
+            <div style={{ marginTop: 10 }} className="actions product-modal-full-width product-modal-actions">
+              {editingTemplateId ? (
+                <button
+                  type="button"
+                  className="danger secondary"
+                  disabled={isBusy}
+                  onClick={() => void deleteProductTemplateFromModal()}
+                >
+                  Delete Template
+                </button>
+              ) : (
+                <span aria-hidden="true" />
+              )}
+              <button type="button" disabled={isBusy || isUploadingTemplateImages} onClick={(event) => void saveProductTemplate(event)}>
+                {isBusy || isUploadingTemplateImages ? "Saving..." : editingTemplateId ? "Save Template" : "Save Template"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+
+        <Modal
           open={activeAddModal === "product"}
           title={editingProductId ? "Edit Product" : "Add Product"}
           size="wide"
+          closeOnBackdropClick={false}
           onClose={closeProductModal}
         >
-          <form onSubmit={saveProduct} className="product-modal-form">
+          <form onSubmit={saveProduct} onKeyDown={preventEnterFormSubmit} className="product-modal-form">
             <Field label="SKU (optional)" className="product-modal-half-width">
               <input value={productDraft.sku} onChange={(e) => setProductDraft((p) => ({ ...p, sku: e.target.value }))} />
             </Field>
@@ -2971,8 +3887,10 @@ export function App() {
             <Field label="Tags (optional)" className="product-modal-full-width">
               <TagTypeaheadEditor
                 tags={productTagsDraft}
+                resetKey={editingProductId ?? "create"}
                 suggestions={allProductTagSuggestions}
                 onChange={setProductTagsDraft}
+                enableBackspaceRemove={false}
                 placeholder="Type to search or add a tag"
               />
             </Field>
@@ -3104,7 +4022,7 @@ export function App() {
               ) : (
                 <span aria-hidden="true" />
               )}
-              <button type="submit" disabled={isBusy}>
+              <button type="button" disabled={isBusy} onClick={(event) => void saveProduct(event)}>
                 {editingProductId ? "Save Product" : "Add Product"}
               </button>
             </div>
@@ -3700,35 +4618,56 @@ function RuleEditor({
 
 function TagTypeaheadEditor({
   tags,
+  resetKey,
   suggestions,
   onChange,
   onCommit,
   onCancel,
   disabled = false,
   compact = false,
+  enableBackspaceRemove = true,
   placeholder = "Type to search tags..."
 }: {
   tags: string[];
+  resetKey?: string;
   suggestions: string[];
-  onChange: (tags: string[]) => void;
+  onChange: Dispatch<SetStateAction<string[]>>;
   onCommit?: () => void;
   onCancel?: () => void;
   disabled?: boolean;
   compact?: boolean;
+  enableBackspaceRemove?: boolean;
   placeholder?: string;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [draftTags, setDraftTags] = useState(tags);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [highlightIndex, setHighlightIndex] = useState(0);
 
+  useEffect(() => {
+    setDraftTags(tags);
+    setQuery("");
+    setOpen(false);
+  }, [resetKey]);
+
+  const updateTags = (updater: SetStateAction<string[]>) => {
+    setDraftTags((currentTags) => {
+      const nextTags = typeof updater === "function" ? updater(currentTags) : updater;
+      onChange(nextTags);
+      return nextTags;
+    });
+  };
+
   const normalizedQuery = query.trim().toLowerCase();
   const filteredSuggestions = suggestions.filter(
-    (suggestion) => !tags.includes(suggestion) && suggestion.includes(normalizedQuery)
+    (suggestion) => !draftTags.includes(suggestion) && suggestion.includes(normalizedQuery)
   );
   const canCreateTag =
-    normalizedQuery.length > 0 && !tags.includes(normalizedQuery) && !suggestions.includes(normalizedQuery);
+    normalizedQuery.length > 0 &&
+    !draftTags.includes(normalizedQuery) &&
+    !suggestions.includes(normalizedQuery);
   const options = [
     ...filteredSuggestions.map((value) => ({ type: "existing" as const, value })),
     ...(canCreateTag ? [{ type: "create" as const, value: normalizedQuery }] : [])
@@ -3742,9 +4681,11 @@ function TagTypeaheadEditor({
   useEffect(() => {
     if (!onCommit) return;
     const handlePointerDown = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        onCommit();
-      }
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (rootRef.current?.contains(target)) return;
+      if (target instanceof Element && target.closest(".modal-backdrop")) return;
+      window.setTimeout(() => onCommit(), 0);
     };
     document.addEventListener("mousedown", handlePointerDown);
     return () => document.removeEventListener("mousedown", handlePointerDown);
@@ -3753,14 +4694,14 @@ function TagTypeaheadEditor({
   const addTag = (rawTag: string) => {
     const nextTag = rawTag.trim().toLowerCase();
     if (!nextTag) return;
-    onChange(normalizeTagList([...tags, nextTag]));
+    updateTags((currentTags) => normalizeTagList([...currentTags, nextTag]));
     setQuery("");
     setOpen(false);
     inputRef.current?.focus();
   };
 
   const removeTag = (tagToRemove: string) => {
-    onChange(tags.filter((tag) => tag !== tagToRemove));
+    updateTags((currentTags) => currentTags.filter((tag) => tag !== tagToRemove));
     inputRef.current?.focus();
   };
 
@@ -3774,17 +4715,19 @@ function TagTypeaheadEditor({
     <div
       ref={rootRef}
       className={`tag-typeahead${compact ? " tag-typeahead-compact" : ""}${disabled ? " tag-typeahead-disabled" : ""}`}
+      onMouseDown={(event) => event.stopPropagation()}
       onClick={(event) => event.stopPropagation()}
     >
       <div className="tag-typeahead-tags">
-        {tags.length > 0 ? (
-          tags.map((tag) => (
+        {draftTags.length > 0 ? (
+          draftTags.map((tag) => (
             <span key={tag} className="variation-tag">
               {tag}
               <button
                 type="button"
                 className="variation-tag-remove"
                 disabled={disabled}
+                onMouseDown={(event) => event.preventDefault()}
                 onClick={() => removeTag(tag)}
                 aria-label={`Remove ${tag}`}
               >
@@ -3837,8 +4780,9 @@ function TagTypeaheadEditor({
               onCancel?.();
               return;
             }
-            if (event.key === "Backspace" && !query && tags.length > 0) {
-              removeTag(tags[tags.length - 1]);
+            if (enableBackspaceRemove && event.key === "Backspace" && !query && draftTags.length > 0) {
+              event.preventDefault();
+              removeTag(draftTags[draftTags.length - 1]);
             }
           }}
           onBlur={() => {
@@ -3870,6 +4814,7 @@ function ProductTagsInlineCell({
   className,
   productTags,
   tagSuggestions,
+  editSessionKey,
   editValue,
   isEditing,
   isSaving,
@@ -3881,11 +4826,12 @@ function ProductTagsInlineCell({
   className?: string;
   productTags: string[];
   tagSuggestions: string[];
+  editSessionKey: string;
   editValue: string;
   isEditing: boolean;
   isSaving: boolean;
   onStartEdit: () => void;
-  onTagsChange: (value: string) => void;
+  onTagsChange: Dispatch<SetStateAction<string[]>>;
   onCommit: () => void;
   onCancel: () => void;
 }) {
@@ -3906,9 +4852,10 @@ function ProductTagsInlineCell({
           compact
           disabled={isSaving}
           tags={parseProductTagsValue(editValue)}
+          resetKey={`${editSessionKey}-tags-inline`}
           suggestions={tagSuggestions}
           placeholder="Search tags"
-          onChange={(nextTags) => onTagsChange(serializeProductTags(nextTags))}
+          onChange={onTagsChange}
           onCommit={onCommit}
           onCancel={onCancel}
         />
@@ -4114,12 +5061,15 @@ function ProductTableRow({
   savingCellKey,
   onStartEdit,
   onEditChange,
+  onTagsChange,
   onCommitEdit,
   onCancelEdit,
   onSelectFieldChange,
   onOpenEditModal,
   onToggleStar,
-  isStarSaving
+  onToggleActive,
+  isStarSaving,
+  isActiveSaving
 }: {
   product: Product;
   categories: ProductCategory[];
@@ -4129,12 +5079,15 @@ function ProductTableRow({
   savingCellKey: string | null;
   onStartEdit: (product: Product, column: ProductInlineColumn) => void;
   onEditChange: (value: string) => void;
+  onTagsChange: Dispatch<SetStateAction<string[]>>;
   onCommitEdit: () => void;
   onCancelEdit: () => void;
   onSelectFieldChange: (column: ProductInlineColumn, value: string) => void;
   onOpenEditModal: () => void;
   onToggleStar: () => void;
+  onToggleActive: (nextActive: boolean) => void;
   isStarSaving: boolean;
+  isActiveSaving: boolean;
 }) {
   const isEditingColumn = (column: ProductInlineColumn) =>
     inlineEdit?.productId === product.id && inlineEdit.column === column;
@@ -4163,6 +5116,16 @@ function ProductTableRow({
         >
           {product.is_starred ? "★" : "☆"}
         </button>
+      </td>
+      <td className="sticky-col-active product-cell-readonly">
+        <input
+          type="checkbox"
+          className="product-active-checkbox"
+          checked={product.active}
+          disabled={isActiveSaving}
+          aria-label={`${product.active ? "Deactivate" : "Activate"} ${product.name}`}
+          onChange={(event) => onToggleActive(event.target.checked)}
+        />
       </td>
       <td className="sticky-col-image product-cell-readonly">
         {product.image_url ? (
@@ -4261,24 +5224,14 @@ function ProductTableRow({
       <ProductTagsInlineCell
         productTags={normalizeTagList(product.tags ?? [])}
         tagSuggestions={tagSuggestions}
+        editSessionKey={product.id}
         editValue={inlineEdit?.productId === product.id && inlineEdit.column === "tags" ? inlineEdit.value : ""}
         isEditing={isEditingColumn("tags")}
         isSaving={isSavingColumn("tags")}
         onStartEdit={() => onStartEdit(product, "tags")}
-        onTagsChange={onEditChange}
+        onTagsChange={onTagsChange}
         onCommit={onCommitEdit}
         onCancel={onCancelEdit}
-      />
-      <ProductInlineSelectCell
-        {...cellProps("active")}
-        display={
-          <StatusBadge label={product.active ? "Active" : "Inactive"} tone={product.active ? "good" : "neutral"} />
-        }
-        options={[
-          { value: "true", label: "Active" },
-          { value: "false", label: "Inactive" }
-        ]}
-        onSelect={(value) => onSelectFieldChange("active", value)}
       />
       <td className="product-cell-nowrap product-cell-readonly">{formatProductTimestamp(product.created_at)}</td>
       <td className="product-cell-nowrap product-cell-readonly">{formatProductTimestamp(product.updated_at)}</td>
@@ -4394,10 +5347,10 @@ function StatusBadge({ label, tone }: { label: string; tone: "good" | "neutral" 
 
 function Field({ label, children, className }: { label: string; children: ReactNode; className?: string }) {
   return (
-    <label className={`field ${className ?? ""}`.trim()}>
-      <span>{label}</span>
+    <div className={`field ${className ?? ""}`.trim()}>
+      <span className="field-label">{label}</span>
       {children}
-    </label>
+    </div>
   );
 }
 
@@ -4406,20 +5359,38 @@ function Modal({
   title,
   onClose,
   children,
-  size = "default"
+  size = "default",
+  closeOnBackdropClick = true
 }: {
   open: boolean;
   title: string;
   onClose: () => void;
   children: ReactNode;
   size?: "default" | "wide" | "fullscreen";
+  closeOnBackdropClick?: boolean;
 }) {
   if (!open) return null;
   const sizeClass =
     size === "fullscreen" ? "modal-card-fullscreen" : size === "wide" ? "modal-card-wide" : "";
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className={`modal-card ${sizeClass}`.trim()} onClick={(event) => event.stopPropagation()}>
+
+  const handleBackdropMouseDown = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (closeOnBackdropClick) {
+      onClose();
+    }
+  };
+
+  return createPortal(
+    <div className="modal-backdrop" role="presentation" onMouseDown={handleBackdropMouseDown}>
+      <div
+        className={`modal-card ${sizeClass}`.trim()}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
         <div className="modal-header">
           <h4>{title}</h4>
           <button type="button" className="modal-close" onClick={onClose} aria-label="Close modal">
@@ -4428,6 +5399,7 @@ function Modal({
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

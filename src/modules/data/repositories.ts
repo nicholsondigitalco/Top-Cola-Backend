@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { supabase } from "../../lib/supabase.js";
-import type { PricingRule, Product, ProductImage, ProductVariation, PromoCode } from "../pricing/pricing.types.js";
+import type { PricingRule, Product, ProductImage, ProductTemplate, ProductVariation, PromoCode } from "../pricing/pricing.types.js";
 
 export interface OrderInsertInput {
   customer_name: string;
@@ -81,6 +82,13 @@ export interface ProductImageRecord extends ProductImage {
   created_at: string;
 }
 
+export interface ProductTemplateImageRecord extends ProductImage {
+  template_id: string;
+  storage_path: string;
+  alt_text: string | null;
+  created_at: string;
+}
+
 export interface OrderSettingsRecord {
   min_order_amount: number;
   min_delivery_buffer_minutes: number;
@@ -95,6 +103,51 @@ export interface NotificationEmailRecord {
   created_at: string;
   updated_at: string;
 }
+
+const PRODUCT_TEMPLATE_SELECT = `
+  id, template_name, sku, name, short_description, long_description, image_url, base_price, cogs_per_unit, category_id, pricing_group_id, variations, tags, active, is_starred, created_at, updated_at,
+  product_categories!inner(slug, name),
+  pricing_groups(slug, name),
+  product_template_images(id, image_url, is_primary, sort_order)
+`;
+
+const mapProductTemplate = (row: any): ProductTemplate => ({
+  id: row.id,
+  template_name: row.template_name ?? row.name,
+  sku: row.sku,
+  name: row.name,
+  short_description: row.short_description ?? "",
+  long_description: row.long_description ?? "",
+  image_url: row.image_url,
+  base_price: Number(row.base_price),
+  cogs_per_unit: Number(row.cogs_per_unit ?? 0),
+  category_id: row.category_id,
+  category_slug: row.product_categories.slug,
+  category_name: row.product_categories.name,
+  pricing_group_id: row.pricing_group_id,
+  pricing_group_slug: row.pricing_groups?.slug ?? null,
+  pricing_group_name: row.pricing_groups?.name ?? null,
+  primary_image_url: row.image_url,
+  gallery_images: Array.isArray(row.product_template_images)
+    ? row.product_template_images
+        .map((image: any) => ({
+          id: image.id,
+          image_url: image.image_url,
+          is_primary: Boolean(image.is_primary),
+          sort_order: Number(image.sort_order ?? 0)
+        }))
+        .sort((a: any, b: any) => {
+          if (a.is_primary === b.is_primary) return a.sort_order - b.sort_order;
+          return a.is_primary ? -1 : 1;
+        })
+    : [],
+  variations: mapProductVariations(row.variations),
+  tags: normalizeProductTags(row.tags),
+  active: row.active,
+  is_starred: Boolean(row.is_starred),
+  created_at: row.created_at,
+  updated_at: row.updated_at
+});
 
 const PRODUCT_DETAIL_SELECT = `
   id, sku, name, short_description, long_description, image_url, base_price, cogs_per_unit, category_id, pricing_group_id, variations, tags, active, is_starred,
@@ -184,6 +237,17 @@ const mapProductCost = (row: any): ProductCostRecord => ({
 const mapProductImage = (row: any): ProductImageRecord => ({
   id: row.id,
   product_id: row.product_id,
+  storage_path: row.storage_path,
+  image_url: row.image_url,
+  alt_text: row.alt_text ?? null,
+  sort_order: Number(row.sort_order ?? 0),
+  is_primary: Boolean(row.is_primary),
+  created_at: row.created_at
+});
+
+const mapProductTemplateImage = (row: any): ProductTemplateImageRecord => ({
+  id: row.id,
+  template_id: row.template_id,
   storage_path: row.storage_path,
   image_url: row.image_url,
   alt_text: row.alt_text ?? null,
@@ -463,6 +527,149 @@ export const catalogRepository = {
 
   async deleteProduct(productId: string): Promise<void> {
     const { error } = await supabase.from("products").delete().eq("id", productId);
+    if (error) throw error;
+  },
+
+  async listProductTemplates(): Promise<ProductTemplate[]> {
+    const { data, error } = await supabase
+      .from("product_templates")
+      .select(PRODUCT_TEMPLATE_SELECT)
+      .order("name", { ascending: true });
+    if (error) throw error;
+    return (data ?? []).map(mapProductTemplate);
+  },
+
+  async getProductTemplateById(templateId: string): Promise<ProductTemplate | null> {
+    const { data, error } = await supabase
+      .from("product_templates")
+      .select(PRODUCT_TEMPLATE_SELECT)
+      .eq("id", templateId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+    return mapProductTemplate(data);
+  },
+
+  async createProductTemplate(payload: {
+    template_name: string;
+    sku?: string;
+    name: string;
+    short_description?: string;
+    long_description?: string;
+    image_url?: string;
+    base_price: number;
+    cogs_per_unit?: number;
+    category_slug: string;
+    pricing_group_slug?: string | null;
+    variations?: ProductVariation[];
+    tags?: string[];
+    active: boolean;
+    is_starred?: boolean;
+  }): Promise<ProductTemplate> {
+    const { data: category, error: categoryError } = await supabase
+      .from("product_categories")
+      .select("id")
+      .eq("slug", payload.category_slug)
+      .single();
+    if (categoryError || !category) {
+      throw new Error("Invalid category.");
+    }
+
+    let pricingGroupId: string | null = null;
+    if (payload.pricing_group_slug) {
+      const { data: pricingGroup, error: groupError } = await supabase
+        .from("pricing_groups")
+        .select("id")
+        .eq("slug", payload.pricing_group_slug)
+        .single();
+      if (groupError || !pricingGroup) {
+        throw new Error("Invalid pricing group.");
+      }
+      pricingGroupId = pricingGroup.id;
+    }
+
+    const resolvedSku = payload.sku?.trim() || sanitizeIdentifier(payload.template_name);
+    if (!resolvedSku) {
+      throw new Error("Template SKU (or a template name that can derive one) is required.");
+    }
+
+    const { data, error } = await supabase
+      .from("product_templates")
+      .insert({
+        id: resolvedSku,
+        template_name: payload.template_name,
+        sku: resolvedSku,
+        name: payload.name,
+        short_description: payload.short_description ?? "",
+        long_description: payload.long_description ?? "",
+        image_url: payload.image_url,
+        base_price: payload.base_price,
+        cogs_per_unit: payload.cogs_per_unit ?? 0,
+        category_id: category.id,
+        pricing_group_id: pricingGroupId,
+        variations: payload.variations ?? [],
+        tags: normalizeProductTags(payload.tags ?? []),
+        active: payload.active,
+        is_starred: payload.is_starred ?? false
+      })
+      .select(PRODUCT_TEMPLATE_SELECT)
+      .single();
+
+    if (error) throw error;
+    return mapProductTemplate(data);
+  },
+
+  async updateProductTemplate(templateId: string, patch: Record<string, unknown>): Promise<ProductTemplate> {
+    const nextPatch: Record<string, unknown> = {};
+    if (patch.template_name !== undefined) nextPatch.template_name = patch.template_name;
+    if (patch.sku !== undefined) nextPatch.sku = patch.sku;
+    if (patch.name !== undefined) nextPatch.name = patch.name;
+    if (patch.short_description !== undefined) nextPatch.short_description = patch.short_description;
+    if (patch.long_description !== undefined) nextPatch.long_description = patch.long_description;
+    if (patch.image_url !== undefined) nextPatch.image_url = patch.image_url;
+    if (patch.base_price !== undefined) nextPatch.base_price = patch.base_price;
+    if (patch.cogs_per_unit !== undefined) nextPatch.cogs_per_unit = patch.cogs_per_unit;
+    if (patch.variations !== undefined) nextPatch.variations = patch.variations;
+    if (patch.tags !== undefined) nextPatch.tags = normalizeProductTags(patch.tags as string[]);
+    if (patch.active !== undefined) nextPatch.active = patch.active;
+    if (patch.is_starred !== undefined) nextPatch.is_starred = patch.is_starred;
+
+    if (patch.category_slug !== undefined) {
+      const { data: category, error } = await supabase
+        .from("product_categories")
+        .select("id")
+        .eq("slug", patch.category_slug)
+        .single();
+      if (error || !category) throw new Error("Invalid category.");
+      nextPatch.category_id = category.id;
+    }
+
+    if (patch.pricing_group_slug !== undefined) {
+      if (patch.pricing_group_slug === null) {
+        nextPatch.pricing_group_id = null;
+      } else {
+        const { data: group, error } = await supabase
+          .from("pricing_groups")
+          .select("id")
+          .eq("slug", patch.pricing_group_slug)
+          .single();
+        if (error || !group) throw new Error("Invalid pricing group.");
+        nextPatch.pricing_group_id = group.id;
+      }
+    }
+
+    const { data, error } = await supabase
+      .from("product_templates")
+      .update(nextPatch)
+      .eq("id", templateId)
+      .select(PRODUCT_TEMPLATE_SELECT)
+      .single();
+    if (error) throw error;
+    return mapProductTemplate(data);
+  },
+
+  async deleteProductTemplate(templateId: string): Promise<void> {
+    const { error } = await supabase.from("product_templates").delete().eq("id", templateId);
     if (error) throw error;
   }
 };
@@ -835,6 +1042,147 @@ export const productImageRepository = {
     if (error) throw error;
   }
 };
+
+export const productTemplateImageRepository = {
+  async listByTemplateId(templateId: string): Promise<ProductTemplateImageRecord[]> {
+    const { data, error } = await supabase
+      .from("product_template_images")
+      .select("id, template_id, storage_path, image_url, alt_text, sort_order, is_primary, created_at")
+      .eq("template_id", templateId)
+      .order("sort_order", { ascending: true })
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+    return (data ?? []).map(mapProductTemplateImage);
+  },
+
+  async create(input: {
+    template_id: string;
+    storage_path: string;
+    image_url: string;
+    sort_order: number;
+    is_primary: boolean;
+    alt_text?: string | null;
+  }): Promise<ProductTemplateImageRecord> {
+    const { data, error } = await supabase
+      .from("product_template_images")
+      .insert({
+        template_id: input.template_id,
+        storage_path: input.storage_path,
+        image_url: input.image_url,
+        sort_order: input.sort_order,
+        is_primary: input.is_primary,
+        alt_text: input.alt_text ?? null
+      })
+      .select("id, template_id, storage_path, image_url, alt_text, sort_order, is_primary, created_at")
+      .single();
+    if (error) throw error;
+    return mapProductTemplateImage(data);
+  },
+
+  async getById(templateId: string, imageId: string): Promise<ProductTemplateImageRecord | null> {
+    const { data, error } = await supabase
+      .from("product_template_images")
+      .select("id, template_id, storage_path, image_url, alt_text, sort_order, is_primary, created_at")
+      .eq("template_id", templateId)
+      .eq("id", imageId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+    return mapProductTemplateImage(data);
+  },
+
+  async setPrimary(templateId: string, imageId: string): Promise<void> {
+    const { error: resetError } = await supabase
+      .from("product_template_images")
+      .update({ is_primary: false })
+      .eq("template_id", templateId)
+      .eq("is_primary", true);
+    if (resetError) throw resetError;
+
+    const { error } = await supabase
+      .from("product_template_images")
+      .update({ is_primary: true })
+      .eq("template_id", templateId)
+      .eq("id", imageId);
+    if (error) throw error;
+  },
+
+  async delete(templateId: string, imageId: string): Promise<void> {
+    const { error } = await supabase
+      .from("product_template_images")
+      .delete()
+      .eq("template_id", templateId)
+      .eq("id", imageId);
+    if (error) throw error;
+  },
+
+  async setTemplatePrimaryImage(templateId: string, imageUrl: string | null): Promise<void> {
+    const { error } = await supabase.from("product_templates").update({ image_url: imageUrl }).eq("id", templateId);
+    if (error) throw error;
+  }
+};
+
+export async function copyTemplateImagesToProduct(
+  templateId: string,
+  productId: string,
+  bucket: string
+): Promise<void> {
+  const existing = await productImageRepository.listByProductId(productId);
+  if (existing.length > 0) return;
+
+  const templateImages = await productTemplateImageRepository.listByTemplateId(templateId);
+  if (templateImages.length === 0) return;
+
+  let nextSortOrder = 0;
+  let primaryImageId: string | null = null;
+  let primaryImageUrl: string | null = null;
+  const hasTemplatePrimary = templateImages.some((image) => image.is_primary);
+
+  for (const [index, templateImage] of templateImages.entries()) {
+    const { data: fileData, error: downloadError } = await supabase.storage
+      .from(bucket)
+      .download(templateImage.storage_path);
+    if (downloadError) throw downloadError;
+
+    const ext = templateImage.storage_path.split(".").pop() ?? "jpg";
+    const imageId = randomUUID();
+    const storagePath = `products/${productId}/${imageId}.${ext}`;
+    const buffer = Buffer.from(await fileData.arrayBuffer());
+
+    const { error: uploadError } = await supabase.storage.from(bucket).upload(storagePath, buffer, {
+      contentType: fileData.type || "image/jpeg",
+      upsert: false
+    });
+    if (uploadError) throw uploadError;
+
+    const {
+      data: { publicUrl }
+    } = supabase.storage.from(bucket).getPublicUrl(storagePath);
+    const isPrimary = templateImage.is_primary || (!hasTemplatePrimary && index === 0);
+    const image = await productImageRepository.create({
+      product_id: productId,
+      storage_path: storagePath,
+      image_url: publicUrl,
+      sort_order: nextSortOrder,
+      is_primary: isPrimary,
+      alt_text: templateImage.alt_text
+    });
+    if (isPrimary) {
+      primaryImageId = image.id;
+      primaryImageUrl = image.image_url;
+    }
+    nextSortOrder += 1;
+  }
+
+  const copied = await productImageRepository.listByProductId(productId);
+  const primary = copied.find((image) => image.id === primaryImageId) ?? copied.find((image) => image.is_primary) ?? copied[0];
+  if (!primary) return;
+
+  if (!primary.is_primary) {
+    await productImageRepository.setPrimary(productId, primary.id);
+  }
+  await productImageRepository.setProductPrimaryImage(productId, primary.image_url);
+}
 
 export const orderRepository = {
   async getByIdempotencyKey(key?: string): Promise<OrderRecord | null> {

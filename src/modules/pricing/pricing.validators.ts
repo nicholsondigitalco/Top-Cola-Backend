@@ -48,12 +48,19 @@ export const ProductCreateSchema = z.object({
   variations: z.array(ProductVariationSchema).max(50).optional(),
   tags: z.array(ProductTagSchema).max(50).optional(),
   active: z.boolean().default(true),
-  isStarred: z.boolean().optional()
+  isStarred: z.boolean().optional(),
+  templateId: z.string().trim().min(1).max(120).optional()
 });
 
 export const ProductUpdateSchema = ProductCreateSchema.partial().extend({
   imageUrl: z.union([z.string().url(), z.literal(""), z.null()]).optional()
 });
+
+export const ProductTemplateCreateSchema = ProductCreateSchema.omit({ templateId: true }).extend({
+  templateName: z.string().trim().min(2).max(120)
+});
+
+export const ProductTemplateUpdateSchema = ProductTemplateCreateSchema.partial();
 
 export const CategoryCreateSchema = z.object({
   slug: z.string().trim().min(2).max(80),

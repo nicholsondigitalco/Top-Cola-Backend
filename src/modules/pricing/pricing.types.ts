@@ -55,6 +55,32 @@ export interface Product {
   updated_at: string;
 }
 
+export interface ProductTemplate {
+  id: string;
+  template_name: string;
+  sku: string | null;
+  name: string;
+  short_description: string;
+  long_description: string;
+  image_url: string | null;
+  base_price: number;
+  cogs_per_unit?: number;
+  category_id: string;
+  category_slug: string;
+  category_name: string;
+  pricing_group_id: string | null;
+  pricing_group_slug: string | null;
+  pricing_group_name: string | null;
+  variations?: ProductVariation[];
+  tags?: string[];
+  primary_image_url?: string | null;
+  gallery_images?: ProductImage[];
+  active: boolean;
+  is_starred: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface QuoteItemInput {
   productId: string;
   quantity: number;
