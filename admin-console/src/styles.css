@@ -2299,6 +2299,43 @@ textarea:focus-visible,
   z-index: 3;
 }
 
+.product-table-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  min-height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.product-table-sort-btn:hover {
+  color: #1d4ed8;
+}
+
+.product-table-sort-btn.is-active {
+  color: #1e3a8a;
+}
+
+.product-table-sort-indicator {
+  flex-shrink: 0;
+  font-size: 0.62rem;
+  line-height: 1;
+  opacity: 0.45;
+}
+
+.product-table-sort-btn.is-active .product-table-sort-indicator {
+  opacity: 1;
+}
+
 .product-table thead .product-col-editable {
   background: var(--product-editable-header-bg);
 }

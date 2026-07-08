@@ -292,6 +292,76 @@ type ProductInlineColumn =
   | "tags"
   | "active";
 
+type ProductSortColumn =
+  | "active"
+  | "name"
+  | "id"
+  | "sku"
+  | "short_description"
+  | "long_description"
+  | "base_price"
+  | "cogs_per_unit"
+  | "avg_order_quantity"
+  | "avg_discount_per_unit"
+  | "avg_profit_margin_per_unit"
+  | "variations"
+  | "category_id"
+  | "pricing_group_id"
+  | "tags"
+  | "created_at"
+  | "updated_at";
+
+const compareProductRows = (left: Product, right: Product, column: ProductSortColumn): number => {
+  switch (column) {
+    case "active":
+      return Number(left.active) - Number(right.active);
+    case "base_price":
+    case "cogs_per_unit":
+    case "avg_order_quantity":
+    case "avg_discount_per_unit":
+    case "avg_profit_margin_per_unit":
+      return Number(left[column] ?? 0) - Number(right[column] ?? 0);
+    case "created_at":
+    case "updated_at":
+      return new Date(left[column]).getTime() - new Date(right[column]).getTime();
+    case "variations": {
+      const leftValue = (left.variations ?? []).map((variation) => variation.name).join(", ").toLowerCase();
+      const rightValue = (right.variations ?? []).map((variation) => variation.name).join(", ").toLowerCase();
+      return leftValue.localeCompare(rightValue);
+    }
+    case "tags": {
+      const leftValue = (left.tags ?? []).join(", ").toLowerCase();
+      const rightValue = (right.tags ?? []).join(", ").toLowerCase();
+      return leftValue.localeCompare(rightValue);
+    }
+    case "sku":
+      return (left.sku ?? "").localeCompare(right.sku ?? "", undefined, { numeric: true, sensitivity: "base" });
+    case "pricing_group_id":
+      return (left.pricing_group_id ?? "").localeCompare(right.pricing_group_id ?? "", undefined, {
+        numeric: true,
+        sensitivity: "base"
+      });
+    case "name":
+      return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" });
+    case "id":
+      return left.id.localeCompare(right.id, undefined, { numeric: true, sensitivity: "base" });
+    case "short_description":
+      return left.short_description.localeCompare(right.short_description, undefined, {
+        numeric: true,
+        sensitivity: "base"
+      });
+    case "long_description":
+      return left.long_description.localeCompare(right.long_description, undefined, {
+        numeric: true,
+        sensitivity: "base"
+      });
+    case "category_id":
+      return left.category_id.localeCompare(right.category_id, undefined, { numeric: true, sensitivity: "base" });
+    default:
+      return 0;
+  }
+};
+
 const getProductCellEditValue = (product: Product, column: ProductInlineColumn): string => {
   switch (column) {
     case "name":
@@ -525,6 +595,10 @@ export function App() {
   const [minDeliveryBufferInput, setMinDeliveryBufferInput] = useState("45");
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [productSearch, setProductSearch] = useState("");
+  const [productSort, setProductSort] = useState<{
+    column: ProductSortColumn;
+    direction: "asc" | "desc";
+  } | null>(null);
   const [productCategoryFilter, setProductCategoryFilter] = useState("all");
   const [productInlineEdit, setProductInlineEdit] = useState<{
     productId: string;
@@ -2111,25 +2185,42 @@ export function App() {
     }
   };
 
-  const productRows = products.filter((product) => {
-    if (productCategoryFilter !== "all" && product.category_slug !== productCategoryFilter) {
-      return false;
-    }
-    const search = productSearch.trim().toLowerCase();
-    if (!search) return true;
-    return (
-      product.id.toLowerCase().includes(search) ||
-      product.name.toLowerCase().includes(search) ||
-      product.short_description.toLowerCase().includes(search) ||
-      product.long_description.toLowerCase().includes(search) ||
-      product.category_name.toLowerCase().includes(search) ||
-      product.category_slug.toLowerCase().includes(search) ||
-      (product.pricing_group_name ?? "").toLowerCase().includes(search) ||
-      (product.pricing_group_slug ?? "no_volume_discount").toLowerCase().includes(search) ||
-      (product.variations ?? []).some((variation) => variation.name.toLowerCase().includes(search)) ||
-      (product.tags ?? []).some((tag) => tag.toLowerCase().includes(search))
+  const toggleProductSort = (column: ProductSortColumn) => {
+    setProductSort((current) =>
+      current?.column === column
+        ? { column, direction: current.direction === "asc" ? "desc" : "asc" }
+        : { column, direction: "asc" }
     );
-  });
+  };
+
+  const productRows = useMemo(() => {
+    const filtered = products.filter((product) => {
+      if (productCategoryFilter !== "all" && product.category_slug !== productCategoryFilter) {
+        return false;
+      }
+      const search = productSearch.trim().toLowerCase();
+      if (!search) return true;
+      return (
+        product.id.toLowerCase().includes(search) ||
+        product.name.toLowerCase().includes(search) ||
+        product.short_description.toLowerCase().includes(search) ||
+        product.long_description.toLowerCase().includes(search) ||
+        product.category_name.toLowerCase().includes(search) ||
+        product.category_slug.toLowerCase().includes(search) ||
+        (product.pricing_group_name ?? "").toLowerCase().includes(search) ||
+        (product.pricing_group_slug ?? "no_volume_discount").toLowerCase().includes(search) ||
+        (product.variations ?? []).some((variation) => variation.name.toLowerCase().includes(search)) ||
+        (product.tags ?? []).some((tag) => tag.toLowerCase().includes(search))
+      );
+    });
+
+    if (!productSort) return filtered;
+
+    return [...filtered].sort((left, right) => {
+      const result = compareProductRows(left, right, productSort.column);
+      return productSort.direction === "asc" ? result : -result;
+    });
+  }, [products, productCategoryFilter, productSearch, productSort]);
 
   const allProductTagSuggestions = useMemo(
     () => normalizeTagList(products.flatMap((product) => product.tags ?? [])).sort(),
@@ -2508,24 +2599,126 @@ export function App() {
                     <thead>
                       <tr>
                         <th className="sticky-col-star product-col-static" aria-label="Starred" />
-                        <th className="sticky-col-active product-col-static">Active</th>
+                        <ProductSortableHeader
+                          label="Active"
+                          column="active"
+                          sort={productSort}
+                          onSort={toggleProductSort}
+                          className="sticky-col-active product-col-static"
+                        />
                         <th className="sticky-col-image product-col-static">Image</th>
-                        <th className="sticky-col-product product-col-editable">Product</th>
-                        <th className="product-col-static">ID</th>
-                        <th className="product-col-editable">SKU</th>
-                        <th className="product-col-editable">Short Description</th>
-                        <th className="product-col-editable">Long Description</th>
-                        <th className="product-col-editable">Base Price</th>
-                        <th className="product-col-editable">COGS / Unit</th>
-                        <th className="product-col-static">Avg Order Qty</th>
-                        <th className="product-col-static">Avg Discount / Unit</th>
-                        <th className="product-col-static">Avg Profit / Unit</th>
-                        <th className="product-col-editable">Variations</th>
-                        <th className="product-col-editable">Category ID</th>
-                        <th className="product-col-editable">Pricing Group ID</th>
-                        <th className="product-col-editable">Tags</th>
-                        <th className="product-col-static">Created At</th>
-                        <th className="product-col-static">Updated At</th>
+                        <ProductSortableHeader
+                          label="Product"
+                          column="name"
+                          sort={productSort}
+                          onSort={toggleProductSort}
+                          className="sticky-col-product product-col-editable"
+                        />
+                        <ProductSortableHeader
+                          label="ID"
+                          column="id"
+                          sort={productSort}
+                          onSort={toggleProductSort}
+                          className="product-col-static"
+                        />
+                        <ProductSortableHeader
+                          label="SKU"
+                          column="sku"
+                          sort={productSort}
+                          onSort={toggleProductSort}
+                          className="product-col-editable"
+                        />
+                        <ProductSortableHeader
+                          label="Short Description"
+                          column="short_description"
+                          sort={productSort}
+                          onSort={toggleProductSort}
+                          className="product-col-editable"
+                        />
+                        <ProductSortableHeader
+                          label="Long Description"
+                          column="long_description"
+                          sort={productSort}
+                          onSort={toggleProductSort}
+                          className="product-col-editable"
+                        />
+                        <ProductSortableHeader
+                          label="Base Price"
+                          column="base_price"
+                          sort={productSort}
+                          onSort={toggleProductSort}
+                          className="product-col-editable"
+                        />
+                        <ProductSortableHeader
+                          label="COGS / Unit"
+                          column="cogs_per_unit"
+                          sort={productSort}
+                          onSort={toggleProductSort}
+                          className="product-col-editable"
+                        />
+                        <ProductSortableHeader
+                          label="Avg Order Qty"
+                          column="avg_order_quantity"
+                          sort={productSort}
+                          onSort={toggleProductSort}
+                          className="product-col-static"
+                        />
+                        <ProductSortableHeader
+                          label="Avg Discount / Unit"
+                          column="avg_discount_per_unit"
+                          sort={productSort}
+                          onSort={toggleProductSort}
+                          className="product-col-static"
+                        />
+                        <ProductSortableHeader
+                          label="Avg Profit / Unit"
+                          column="avg_profit_margin_per_unit"
+                          sort={productSort}
+                          onSort={toggleProductSort}
+                          className="product-col-static"
+                        />
+                        <ProductSortableHeader
+                          label="Variations"
+                          column="variations"
+                          sort={productSort}
+                          onSort={toggleProductSort}
+                          className="product-col-editable"
+                        />
+                        <ProductSortableHeader
+                          label="Category ID"
+                          column="category_id"
+                          sort={productSort}
+                          onSort={toggleProductSort}
+                          className="product-col-editable"
+                        />
+                        <ProductSortableHeader
+                          label="Pricing Group ID"
+                          column="pricing_group_id"
+                          sort={productSort}
+                          onSort={toggleProductSort}
+                          className="product-col-editable"
+                        />
+                        <ProductSortableHeader
+                          label="Tags"
+                          column="tags"
+                          sort={productSort}
+                          onSort={toggleProductSort}
+                          className="product-col-editable"
+                        />
+                        <ProductSortableHeader
+                          label="Created At"
+                          column="created_at"
+                          sort={productSort}
+                          onSort={toggleProductSort}
+                          className="product-col-static"
+                        />
+                        <ProductSortableHeader
+                          label="Updated At"
+                          column="updated_at"
+                          sort={productSort}
+                          onSort={toggleProductSort}
+                          className="product-col-static"
+                        />
                         <th className="column-edit sticky-col-edit product-col-static" aria-label="Edit product" />
                       </tr>
                     </thead>
@@ -5049,6 +5242,37 @@ function ProductEditableCell({
     >
       {display}
     </td>
+  );
+}
+
+function ProductSortableHeader({
+  label,
+  column,
+  sort,
+  onSort,
+  className
+}: {
+  label: string;
+  column: ProductSortColumn;
+  sort: { column: ProductSortColumn; direction: "asc" | "desc" } | null;
+  onSort: (column: ProductSortColumn) => void;
+  className?: string;
+}) {
+  const isActive = sort?.column === column;
+  const directionLabel = isActive ? (sort.direction === "asc" ? "ascending" : "descending") : "none";
+  return (
+    <th className={className} aria-sort={isActive ? directionLabel : "none"}>
+      <button
+        type="button"
+        className={`product-table-sort-btn${isActive ? " is-active" : ""}`}
+        onClick={() => onSort(column)}
+      >
+        <span>{label}</span>
+        <span className="product-table-sort-indicator" aria-hidden="true">
+          {isActive ? (sort.direction === "asc" ? "▲" : "▼") : "↕"}
+        </span>
+      </button>
+    </th>
   );
 }
 

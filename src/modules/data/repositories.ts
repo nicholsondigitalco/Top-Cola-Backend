@@ -301,6 +301,17 @@ const normalizeProductTags = (value: unknown): string[] => {
   return tags;
 };
 
+const categoryNameToTag = (categoryName: string): string => categoryName.trim().toLowerCase();
+
+const ensureCategoryNameTag = (tags: string[], categoryName: string): string[] => {
+  const normalized = normalizeProductTags(tags);
+  const categoryTag = categoryNameToTag(categoryName);
+  if (!categoryTag || normalized.includes(categoryTag)) {
+    return normalized;
+  }
+  return [...normalized, categoryTag];
+};
+
 const sanitizeIdentifier = (value: string): string =>
   value
     .trim()
@@ -425,7 +436,7 @@ export const catalogRepository = {
   }): Promise<Product> {
     const { data: category, error: categoryError } = await supabase
       .from("product_categories")
-      .select("id")
+      .select("id, name")
       .eq("slug", payload.category_slug)
       .single();
     if (categoryError || !category) {
@@ -464,7 +475,7 @@ export const catalogRepository = {
         category_id: category.id,
         pricing_group_id: pricingGroupId,
         variations: payload.variations ?? [],
-        tags: normalizeProductTags(payload.tags ?? []),
+        tags: ensureCategoryNameTag(payload.tags ?? [], category.name),
         active: payload.active,
         is_starred: payload.is_starred ?? false
       })
@@ -487,14 +498,13 @@ export const catalogRepository = {
     if (patch.base_price !== undefined) nextPatch.base_price = patch.base_price;
     if (patch.cogs_per_unit !== undefined) nextPatch.cogs_per_unit = patch.cogs_per_unit;
     if (patch.variations !== undefined) nextPatch.variations = patch.variations;
-    if (patch.tags !== undefined) nextPatch.tags = normalizeProductTags(patch.tags);
     if (patch.active !== undefined) nextPatch.active = patch.active;
     if (patch.is_starred !== undefined) nextPatch.is_starred = patch.is_starred;
 
     if (patch.category_slug !== undefined) {
       const { data: category, error } = await supabase
         .from("product_categories")
-        .select("id")
+        .select("id, name")
         .eq("slug", patch.category_slug)
         .single();
       if (error || !category) throw new Error("Invalid category.");
@@ -514,6 +524,31 @@ export const catalogRepository = {
       nextPatch.pricing_group_id = group.id;
       }
     }
+
+    const { data: currentProduct, error: currentProductError } = await supabase
+      .from("products")
+      .select("tags, category_id")
+      .eq("id", productId)
+      .single();
+    if (currentProductError || !currentProduct) {
+      throw new Error("Product not found.");
+    }
+
+    const effectiveCategoryId = (nextPatch.category_id as string | undefined) ?? currentProduct.category_id;
+    const { data: effectiveCategory, error: effectiveCategoryError } = await supabase
+      .from("product_categories")
+      .select("name")
+      .eq("id", effectiveCategoryId)
+      .single();
+    if (effectiveCategoryError || !effectiveCategory) {
+      throw new Error("Invalid category.");
+    }
+
+    const baseTags =
+      patch.tags !== undefined
+        ? normalizeProductTags(patch.tags)
+        : normalizeProductTags(currentProduct.tags);
+    nextPatch.tags = ensureCategoryNameTag(baseTags, effectiveCategory.name);
 
     const { data, error } = await supabase
       .from("products")
@@ -568,7 +603,7 @@ export const catalogRepository = {
   }): Promise<ProductTemplate> {
     const { data: category, error: categoryError } = await supabase
       .from("product_categories")
-      .select("id")
+      .select("id, name")
       .eq("slug", payload.category_slug)
       .single();
     if (categoryError || !category) {
@@ -608,7 +643,7 @@ export const catalogRepository = {
         category_id: category.id,
         pricing_group_id: pricingGroupId,
         variations: payload.variations ?? [],
-        tags: normalizeProductTags(payload.tags ?? []),
+        tags: ensureCategoryNameTag(payload.tags ?? [], category.name),
         active: payload.active,
         is_starred: payload.is_starred ?? false
       })
@@ -630,14 +665,13 @@ export const catalogRepository = {
     if (patch.base_price !== undefined) nextPatch.base_price = patch.base_price;
     if (patch.cogs_per_unit !== undefined) nextPatch.cogs_per_unit = patch.cogs_per_unit;
     if (patch.variations !== undefined) nextPatch.variations = patch.variations;
-    if (patch.tags !== undefined) nextPatch.tags = normalizeProductTags(patch.tags as string[]);
     if (patch.active !== undefined) nextPatch.active = patch.active;
     if (patch.is_starred !== undefined) nextPatch.is_starred = patch.is_starred;
 
     if (patch.category_slug !== undefined) {
       const { data: category, error } = await supabase
         .from("product_categories")
-        .select("id")
+        .select("id, name")
         .eq("slug", patch.category_slug)
         .single();
       if (error || !category) throw new Error("Invalid category.");
@@ -657,6 +691,31 @@ export const catalogRepository = {
         nextPatch.pricing_group_id = group.id;
       }
     }
+
+    const { data: currentTemplate, error: currentTemplateError } = await supabase
+      .from("product_templates")
+      .select("tags, category_id")
+      .eq("id", templateId)
+      .single();
+    if (currentTemplateError || !currentTemplate) {
+      throw new Error("Template not found.");
+    }
+
+    const effectiveCategoryId = (nextPatch.category_id as string | undefined) ?? currentTemplate.category_id;
+    const { data: effectiveCategory, error: effectiveCategoryError } = await supabase
+      .from("product_categories")
+      .select("name")
+      .eq("id", effectiveCategoryId)
+      .single();
+    if (effectiveCategoryError || !effectiveCategory) {
+      throw new Error("Invalid category.");
+    }
+
+    const baseTags =
+      patch.tags !== undefined
+        ? normalizeProductTags(patch.tags)
+        : normalizeProductTags(currentTemplate.tags);
+    nextPatch.tags = ensureCategoryNameTag(baseTags, effectiveCategory.name);
 
     const { data, error } = await supabase
       .from("product_templates")
